@@ -24,11 +24,11 @@ class ScheduleWindow(QDialog):
         schedule_group = QGroupBox("Расписание занятий")
         schedule_layout = QVBoxLayout()
 
-        # Создаем таблицу расписания (7 уроков × 6 дней)
-        self.schedule_table = QTableWidget(7, 6)
+        # Создаем таблицу расписания (5 уроков × 6 дней)
+        self.schedule_table = QTableWidget(5, 6)
         self.schedule_table.setHorizontalHeaderLabels(
             ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"])
-        self.schedule_table.setVerticalHeaderLabels(["1", "2", "3", "4", "5", "6", "7"])
+        self.schedule_table.setVerticalHeaderLabels(["1", "2", "3", "4", "5"])
 
         # Настройка таблицы
         self.schedule_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -58,7 +58,7 @@ class ScheduleWindow(QDialog):
         control_panel = QHBoxLayout()
 
         # Кнопка сохранения
-        save_btn = QPushButton("Сохранить в schedule.db")
+        save_btn = QPushButton("Сохранить расписание")
         save_btn.setStyleSheet("""
             QPushButton {
                 background-color: #FF69B4;
@@ -99,121 +99,90 @@ class ScheduleWindow(QDialog):
     def load_schedule_data(self):
         """Загрузка данных расписания из базы данных"""
         try:
-            conn = sqlite3.connect('school.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
 
-            # Получаем данные расписания
-            cursor.execute("SELECT weekday, lesson_number, subject FROM schedule")
+            # Получаем данные из таблицы schedule
+            cursor.execute("""
+                SELECT s.day_of_week, ts.slot_number, subj.name, t.full_name, c.number, cl.name
+                FROM schedule s
+                JOIN time_slots ts ON s.time_slot_id = ts.id
+                JOIN subjects subj ON s.subject_id = subj.id
+                JOIN teachers t ON s.teacher_id = t.id
+                JOIN classrooms c ON s.classroom_id = c.id
+                JOIN classes cl ON s.class_id = cl.id
+                WHERE s.week_number = 1  # Показываем только первую неделю
+                ORDER BY s.day_of_week, ts.slot_number
+            """)
+
             schedule_data = cursor.fetchall()
 
             # Заполняем таблицу данными
-            for weekday, lesson_number, subject in schedule_data:
-                # Преобразуем день недели в индекс столбца
-                weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
-                col = weekdays.index(weekday)
-                row = lesson_number - 1  # уроки нумеруются с 1
+            for day, slot, subject, teacher, classroom, class_name in schedule_data:
+                col = day - 1  # дни недели в базе от 1 до 6
+                row = slot - 1  # слоты от 1 до 5
 
-                if 0 <= row < 7 and 0 <= col < 6:
-                    item = QTableWidgetItem(subject)
+                if 0 <= row < 5 and 0 <= col < 6:
+                    text = f"{subject} ({class_name})\n{teacher}, {classroom}"
+                    item = QTableWidgetItem(text)
+                    item.setData(Qt.ItemDataRole.UserRole, (subject, teacher, classroom, class_name))
                     item.setBackground(QColor(60, 60, 60))
                     item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEditable)
                     self.schedule_table.setItem(row, col, item)
-                    self.setup_tooltip(item, row, col)
 
         except sqlite3.Error as e:
-            QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить данные расписания: {str(e)}")
-        finally:
-            if conn:
-                conn.close()
-
-    def setup_tooltip(self, item, row, col):
-        """Настраиваем подсказку для ячейки таблицы"""
-        day = self.schedule_table.horizontalHeaderItem(col).text()
-        lesson_num = self.schedule_table.verticalHeaderItem(row).text()
-        subject = item.text()
-
-        try:
-            conn = sqlite3.connect('school.db')
-            cursor = conn.cursor()
-
-            # Получаем дополнительные данные о занятии
-            cursor.execute("""
-                SELECT teacher, classroom, class 
-                FROM schedule 
-                WHERE weekday = ? AND lesson_number = ? AND subject = ?
-            """, (day, row + 1, subject))
-
-            result = cursor.fetchone()
-
-            if result:
-                teacher, classroom, class_ = result
-                tooltip = (
-                    f"<b>Урок {lesson_num}, {day}</b><br><br>"
-                    f"Предмет: {subject.split('(')[0].strip()}<br>"
-                    f"Класс: {class_}<br>"
-                    f"Кабинет: {classroom}<br>"
-                    f"Учитель: {teacher}"
-                )
-            else:
-                tooltip = f"<b>Урок {lesson_num}, {day}</b><br><br>Нет данных"
-
-            item.setToolTip(tooltip)
-
-        except sqlite3.Error as e:
-            QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить данные для подсказки: {str(e)}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить расписание: {str(e)}")
         finally:
             if conn:
                 conn.close()
 
     def save_schedule(self):
-        """Сохранение расписания в базу данных"""
+        """Сохранение изменений расписания в базу данных"""
         try:
-            conn = sqlite3.connect('school.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
 
-            # Сначала очистим таблицу расписания
-            cursor.execute("DELETE FROM schedule")
+            # Сначала очищаем текущее расписание (только для первой недели)
+            cursor.execute("DELETE FROM schedule WHERE week_number = 1")
 
-            # Заполняем таблицу данными из QTableWidget
+            # Сохраняем новые данные
             for row in range(self.schedule_table.rowCount()):
                 for col in range(self.schedule_table.columnCount()):
-                    subject = self.schedule_table.item(row, col).text() if self.schedule_table.item(row, col) else ""
-                    if subject:
-                        weekday = self.schedule_table.horizontalHeaderItem(col).text()
-                        lesson_number = row + 1  # номера уроков начинаются с 1
+                    item = self.schedule_table.item(row, col)
+                    if item and item.text():
+                        day_of_week = col + 1
+                        time_slot_id = row + 1
 
-                        # Получаем дополнительные данные из подсказки
-                        tooltip = self.schedule_table.item(row, col).toolTip()
-                        teacher = "Не указано"
-                        classroom = "Не указано"
-                        class_ = "Не указано"
+                        # Получаем дополнительные данные из UserRole
+                        subject_name, teacher_name, classroom_number, class_name = item.data(Qt.ItemDataRole.UserRole)
 
-                        if "Учитель:" in tooltip:
-                            teacher = tooltip.split("Учитель:")[1].split("<")[0].strip()
-                        if "Кабинет:" in tooltip:
-                            classroom = tooltip.split("Кабинет:")[1].split("<")[0].strip()
-                        if "Класс:" in tooltip:
-                            class_ = tooltip.split("Класс:")[1].split("<")[0].strip()
+                        # Получаем ID из базы данных
+                        cursor.execute("SELECT id FROM subjects WHERE name = ?", (subject_name,))
+                        subject_id = cursor.fetchone()[0]
 
-                        cursor.execute('''
-                            INSERT INTO schedule (weekday, lesson_number, subject, teacher, classroom, class)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (weekday, lesson_number, subject, teacher, classroom, class_))
+                        cursor.execute("SELECT id FROM teachers WHERE full_name = ?", (teacher_name,))
+                        teacher_id = cursor.fetchone()[0]
+
+                        cursor.execute("SELECT id FROM classrooms WHERE number = ?", (classroom_number,))
+                        classroom_id = cursor.fetchone()[0]
+
+                        cursor.execute("SELECT id FROM classes WHERE name = ?", (class_name,))
+                        class_id = cursor.fetchone()[0]
+
+                        # Вставляем запись в расписание
+                        cursor.execute("""
+                            INSERT INTO schedule (
+                                class_id, day_of_week, time_slot_id, 
+                                subject_id, teacher_id, classroom_id, 
+                                week_number
+                            ) VALUES (?, ?, ?, ?, ?, ?, 1)
+                        """, (class_id, day_of_week, time_slot_id, subject_id, teacher_id, classroom_id))
 
             conn.commit()
-            QMessageBox.information(
-                self,
-                "Сохранение",
-                "Расписание успешно сохранено в базу данных school.db",
-                QMessageBox.StandardButton.Ok
-            )
+            QMessageBox.information(self, "Сохранено", "Расписание успешно сохранено в базу данных")
+
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Ошибка сохранения",
-                f"Произошла ошибка при сохранении данных: {str(e)}",
-                QMessageBox.StandardButton.Ok
-            )
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить расписание: {str(e)}")
         finally:
             if conn:
                 conn.close()
@@ -228,7 +197,7 @@ class MainWindow(QMainWindow):
 
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
-        self.setWindowTitle("Администратор: Управление данными")
+        self.setWindowTitle("Администратор: Управление данными школы")
         self.setFixedSize(1200, 800)
 
         # Основной стиль приложения
@@ -300,7 +269,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(user_info)
 
         # Кнопка составления расписания
-        self.schedule_btn = QPushButton("Начать составление расписания")
+        self.schedule_btn = QPushButton("Редактировать расписание")
         self.schedule_btn.setStyleSheet("""
             QPushButton {
                 background-color: #FF69B4;
@@ -348,7 +317,7 @@ class MainWindow(QMainWindow):
     def load_tables_from_db(self):
         """Загрузка списка таблиц из базы данных и создание кнопок для них"""
         try:
-            conn = sqlite3.connect('school.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
 
             # Получаем список всех таблиц в базе данных, исключая служебные
@@ -356,17 +325,23 @@ class MainWindow(QMainWindow):
                 SELECT name FROM sqlite_master 
                 WHERE type='table' 
                 AND name NOT LIKE 'sqlite_%'
+                AND name NOT IN ('student_groups')  -- Исключаем таблицу с группами студентов
+                ORDER BY name
             """)
+
             tables = [table[0] for table in cursor.fetchall()]
 
             # Очищаем предыдущие кнопки
             for i in reversed(range(self.tab_buttons.count())):
-                self.tab_buttons.itemAt(i).widget().setParent(None)
+                widget = self.tab_buttons.itemAt(i).widget()
+                if widget:
+                    widget.setParent(None)
 
             # Создаем кнопки для каждой таблицы
             self.buttons = []
             for table in tables:
-                btn = QPushButton(table)
+                btn = QPushButton(self.translate_table_name(table))
+                btn.setProperty('table_name', table)  # Сохраняем оригинальное имя таблицы
                 btn.setCheckable(True)
                 btn.clicked.connect(self.change_tab)
                 self.tab_buttons.addWidget(btn)
@@ -374,13 +349,26 @@ class MainWindow(QMainWindow):
 
             if self.buttons:
                 self.buttons[0].setChecked(True)
-                self.update_table(self.buttons[0].text())
+                self.update_table(self.buttons[0].property('table_name'))
 
         except sqlite3.Error as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить список таблиц: {str(e)}")
         finally:
             if conn:
                 conn.close()
+
+    def translate_table_name(self, table_name):
+        """Перевод имен таблиц на русский"""
+        translations = {
+            'classes': 'Классы',
+            'subjects': 'Предметы',
+            'classrooms': 'Кабинеты',
+            'teachers': 'Учителя',
+            'teacher_subjects': 'Учителя-Предметы',
+            'time_slots': 'Временные слоты',
+            'schedule': 'Расписание'
+        }
+        return translations.get(table_name, table_name)
 
     def setup_connections(self):
         """Настройка сигналов и слотов"""
@@ -399,12 +387,13 @@ class MainWindow(QMainWindow):
     def change_tab(self):
         """Переключение между таблицами"""
         sender = self.sender()
+        table_name = sender.property('table_name')
 
         for btn in self.buttons:
             btn.setChecked(False)
 
         sender.setChecked(True)
-        self.update_table(sender.text())
+        self.update_table(table_name)
 
     def update_table(self, table_name):
         """Обновление таблицы в соответствии с выбранной вкладкой"""
@@ -412,7 +401,7 @@ class MainWindow(QMainWindow):
         self.table.clear()
 
         try:
-            conn = sqlite3.connect('school.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
 
             # Получаем данные из таблицы
@@ -451,14 +440,14 @@ class MainWindow(QMainWindow):
         active_table = None
         for btn in self.buttons:
             if btn.isChecked():
-                active_table = btn.text()
+                active_table = btn.property('table_name')
                 break
 
         if not active_table:
             return
 
         try:
-            conn = sqlite3.connect('school.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
 
             # Получаем информацию о столбцах таблицы
@@ -477,7 +466,18 @@ class MainWindow(QMainWindow):
                 WHERE {pk_column} = ?
             """, (item.text(), pk_value))
 
+            # Для таблиц с триггерами обновления временных меток
+            if active_table in ['classes', 'subjects', 'classrooms', 'teachers', 'time_slots', 'schedule']:
+                cursor.execute(f"""
+                    UPDATE {active_table} 
+                    SET updated_at = CURRENT_TIMESTAMP 
+                    WHERE {pk_column} = ?
+                """, (pk_value,))
+
             conn.commit()
+
+            # Обновляем таблицу, чтобы показать изменения (например, updated_at)
+            self.update_table(active_table)
 
         except sqlite3.Error as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось обновить данные: {str(e)}")
@@ -488,14 +488,14 @@ class MainWindow(QMainWindow):
     def update_time(self):
         """Обновление времени и даты"""
         now = datetime.now()
-        time_str = now.strftime("%I:%M %p")
+        time_str = now.strftime("%H:%M")
         weekday = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"][now.weekday()]
         month = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"][now.month - 1]
-        date_str = f"{weekday} // {now.day} {month}"
+        date_str = f"{weekday}, {now.day} {month} {now.year}"
         self.time_label.setText(f"<b>{time_str}</b><br>{date_str}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
