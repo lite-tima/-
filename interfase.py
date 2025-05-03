@@ -1,5 +1,6 @@
 import sys
 import sqlite3
+import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem, QLabel, QHeaderView,
@@ -37,7 +38,7 @@ class ScheduleWindow(QDialog):
             QTableWidget {
                 background-color: #252525;
                 color: #E0E0E0;
-                gridline-color: #333333;
+                gridline-color: #808080;
                 border: 1px solid #FF69B4;
             }
             QHeaderView::section {
@@ -194,6 +195,8 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.setup_connections()
         self.load_tables_from_db()
+        self.current_table_name = None
+        self.new_rows = {}  # Словарь для хранения новых строк по таблицам
 
     def setup_ui(self):
         """Настройка пользовательского интерфейса"""
@@ -217,7 +220,7 @@ class MainWindow(QMainWindow):
             QTableWidget {
                 background-color: #252525;
                 color: #E0E0E0;
-                gridline-color: #333333;
+                gridline-color: #808080;
                 border: 1px solid #FF69B4;
             }
             QHeaderView::section {
@@ -284,6 +287,22 @@ class MainWindow(QMainWindow):
         """)
         left_layout.addWidget(self.schedule_btn)
 
+        # Кнопка возможностей администратора
+        self.admin_features_btn = QPushButton("Возможности администратора")
+        self.admin_features_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF69B4;
+                color: black;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #FF8FB3;
+            }
+        """)
+        left_layout.addWidget(self.admin_features_btn)
+
         # Время и дата
         left_layout.addStretch()
         self.time_label = QLabel()
@@ -308,11 +327,104 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
 
+        # Кнопка добавления строки
+        self.add_row_btn = QPushButton("Добавить строку")
+        self.add_row_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF69B4;
+                color: black;
+                font-weight: bold;
+                padding: 8px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #FF8FB3;
+            }
+        """)
+        self.add_row_btn.clicked.connect(self.add_table_row)
+
         right_layout.addLayout(self.tab_buttons)
         right_layout.addWidget(self.table)
+        right_layout.addWidget(self.add_row_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
         main_layout.addWidget(left_panel, stretch=1)
         main_layout.addWidget(right_panel, stretch=3)
+
+    def add_table_row(self):
+        """Добавление новой строки в текущую таблицу"""
+        if not self.current_table_name:
+            return
+
+        # Получаем количество столбцов
+        column_count = self.table.columnCount()
+        if column_count == 0:
+            return
+
+        # Добавляем новую строку
+        row_position = self.table.rowCount()
+        self.table.insertRow(row_position)
+
+        # Заполняем ячейки пустыми значениями
+        for col in range(column_count):
+            item = QTableWidgetItem("")
+            self.table.setItem(row_position, col, item)
+
+        # Помечаем строку как новую (еще не сохраненную в БД)
+        if self.current_table_name not in self.new_rows:
+            self.new_rows[self.current_table_name] = []
+        self.new_rows[self.current_table_name].append(row_position)
+
+        # Прокручиваем таблицу к новой строке
+        self.table.scrollToBottom()
+
+    def save_new_rows(self, table_name):
+        """Сохранение новых строк в базу данных"""
+        if table_name not in self.new_rows or not self.new_rows[table_name]:
+            return
+
+        try:
+            conn = sqlite3.connect('school_schedule.db')
+            cursor = conn.cursor()
+
+            # Получаем информацию о столбцах таблицы
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = cursor.fetchall()
+            column_names = [column[1] for column in columns]
+
+            for row in self.new_rows[table_name]:
+                # Проверяем, заполнена ли строка (хотя бы одна ячейка не пустая)
+                is_filled = False
+                row_data = []
+                for col in range(self.table.columnCount()):
+                    item = self.table.item(row, col)
+                    if item and item.text().strip():
+                        is_filled = True
+                        row_data.append(item.text().strip())
+                    else:
+                        row_data.append(None)
+
+                if not is_filled:
+                    continue  # Пропускаем пустые строки
+
+                # Формируем запрос на вставку
+                columns_str = ", ".join(column_names)
+                placeholders = ", ".join(["?"] * len(column_names))
+                query = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})"
+
+                # Выполняем запрос
+                cursor.execute(query, row_data)
+
+            conn.commit()
+
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить новые строки: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
+
+            # Очищаем сохраненные строки для этой таблицы
+            if table_name in self.new_rows:
+                del self.new_rows[table_name]
 
     def load_tables_from_db(self):
         """Загрузка списка таблиц из базы данных и создание кнопок для них"""
@@ -349,7 +461,8 @@ class MainWindow(QMainWindow):
 
             if self.buttons:
                 self.buttons[0].setChecked(True)
-                self.update_table(self.buttons[0].property('table_name'))
+                self.current_table_name = self.buttons[0].property('table_name')
+                self.update_table(self.current_table_name)
 
         except sqlite3.Error as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить список таблиц: {str(e)}")
@@ -378,6 +491,33 @@ class MainWindow(QMainWindow):
 
         self.table.itemChanged.connect(self.on_item_changed)
         self.schedule_btn.clicked.connect(self.show_schedule_window)
+        self.admin_features_btn.clicked.connect(self.run_admin_features)
+
+    def run_admin_features(self):
+        """Запуск скрипта с возможностями администратора"""
+        try:
+            # Создаем скрипт для запуска
+            script = """
+from MainWindow import *
+import sys
+from PyQt6.QtWidgets import (
+    QApplication
+)
+app = QApplication(sys.argv)
+window = MainWindow()
+window.show()
+sys.exit(app.exec())
+            """
+
+            # Сохраняем скрипт во временный файл
+            with open("admin_features.py", "w", encoding="utf-8") as f:
+                f.write(script)
+
+            # Запускаем скрипт в новом процессе
+            subprocess.Popen([sys.executable, "admin_features.py"])
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось запустить возможности администратора: {str(e)}")
 
     def show_schedule_window(self):
         """Показывает окно составления расписания"""
@@ -386,6 +526,10 @@ class MainWindow(QMainWindow):
 
     def change_tab(self):
         """Переключение между таблицами"""
+        # Сохраняем новые строки из текущей таблицы перед переключением
+        if self.current_table_name and self.current_table_name in self.new_rows:
+            self.save_new_rows(self.current_table_name)
+
         sender = self.sender()
         table_name = sender.property('table_name')
 
@@ -393,6 +537,7 @@ class MainWindow(QMainWindow):
             btn.setChecked(False)
 
         sender.setChecked(True)
+        self.current_table_name = table_name
         self.update_table(table_name)
 
     def update_table(self, table_name):
@@ -436,54 +581,47 @@ class MainWindow(QMainWindow):
         row = item.row()
         col = item.column()
 
-        # Находим активную таблицу
-        active_table = None
-        for btn in self.buttons:
-            if btn.isChecked():
-                active_table = btn.property('table_name')
-                break
-
-        if not active_table:
+        if not self.current_table_name:
             return
 
-        try:
-            conn = sqlite3.connect('school_schedule.db')
-            cursor = conn.cursor()
+        # Если строка не новая, обновляем ее в базе данных
+        if self.current_table_name not in self.new_rows or row not in self.new_rows[self.current_table_name]:
+            try:
+                conn = sqlite3.connect('school_schedule.db')
+                cursor = conn.cursor()
 
-            # Получаем информацию о столбцах таблицы
-            cursor.execute(f"PRAGMA table_info({active_table})")
-            columns = cursor.fetchall()
-            column_name = columns[col][1]
+                # Получаем информацию о столбцах таблицы
+                cursor.execute(f"PRAGMA table_info({self.current_table_name})")
+                columns = cursor.fetchall()
+                column_name = columns[col][1]
 
-            # Получаем первичный ключ таблицы (предполагаем, что это первый столбец)
-            pk_column = columns[0][1]
-            pk_value = self.table.item(row, 0).text()
+                # Получаем первичный ключ таблицы (предполагаем, что это первый столбец)
+                pk_column = columns[0][1]
+                pk_value = self.table.item(row, 0).text()
 
-            # Обновляем данные в базе
-            cursor.execute(f"""
-                UPDATE {active_table} 
-                SET {column_name} = ? 
-                WHERE {pk_column} = ?
-            """, (item.text(), pk_value))
-
-            # Для таблиц с триггерами обновления временных меток
-            if active_table in ['classes', 'subjects', 'classrooms', 'teachers', 'time_slots', 'schedule']:
+                # Обновляем данные в базе
                 cursor.execute(f"""
-                    UPDATE {active_table} 
-                    SET updated_at = CURRENT_TIMESTAMP 
+                    UPDATE {self.current_table_name} 
+                    SET {column_name} = ? 
                     WHERE {pk_column} = ?
-                """, (pk_value,))
+                """, (item.text(), pk_value))
 
-            conn.commit()
+                # Для таблиц с триггерами обновления временных меток
+                if self.current_table_name in ['classes', 'subjects', 'classrooms', 'teachers', 'time_slots',
+                                               'schedule']:
+                    cursor.execute(f"""
+                        UPDATE {self.current_table_name} 
+                        SET updated_at = CURRENT_TIMESTAMP 
+                        WHERE {pk_column} = ?
+                    """, (pk_value,))
 
-            # Обновляем таблицу, чтобы показать изменения (например, updated_at)
-            self.update_table(active_table)
+                conn.commit()
 
-        except sqlite3.Error as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить данные: {str(e)}")
-        finally:
-            if conn:
-                conn.close()
+            except sqlite3.Error as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось обновить данные: {str(e)}")
+            finally:
+                if conn:
+                    conn.close()
 
     def update_time(self):
         """Обновление времени и даты"""
