@@ -155,7 +155,13 @@ class ScheduleWindow(QDialog):
                         time_slot_id = row + 1
 
                         # Получаем дополнительные данные из UserRole
-                        subject_name, teacher_name, classroom_number, class_name = item.data(Qt.ItemDataRole.UserRole)
+                        user_data = item.data(Qt.ItemDataRole.UserRole)
+                        if user_data:
+                            subject_name, teacher_name, classroom_number, class_name = user_data
+                        else:
+                             # Если нет данных UserRole, пропускаем эту ячейку или обрабатываем ошибку
+                             continue
+
 
                         # Получаем ID из базы данных
                         cursor.execute("SELECT id FROM subjects WHERE name = ?", (subject_name,))
@@ -173,8 +179,8 @@ class ScheduleWindow(QDialog):
                         # Вставляем запись в расписание
                         cursor.execute("""
                             INSERT INTO schedule (
-                                class_id, day_of_week, time_slot_id, 
-                                subject_id, teacher_id, classroom_id, 
+                                class_id, day_of_week, time_slot_id,
+                                subject_id, teacher_id, classroom_id,
                                 week_number
                             ) VALUES (?, ?, ?, ?, ?, ?, 1)
                         """, (class_id, day_of_week, time_slot_id, subject_id, teacher_id, classroom_id))
@@ -303,6 +309,7 @@ class MainWindow(QMainWindow):
         """)
         left_layout.addWidget(self.admin_features_btn)
 
+
         # Время и дата
         left_layout.addStretch()
         self.time_label = QLabel()
@@ -377,6 +384,7 @@ class MainWindow(QMainWindow):
         # Прокручиваем таблицу к новой строке
         self.table.scrollToBottom()
 
+
     def save_new_rows(self, table_name):
         """Сохранение новых строк в базу данных"""
         if table_name not in self.new_rows or not self.new_rows[table_name]:
@@ -432,12 +440,12 @@ class MainWindow(QMainWindow):
             conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
 
-            # Получаем список всех таблиц в базе данных, исключая служебные
+            # Получаем список всех таблиц в базе данных, исключая служебные и 'schedule'
             cursor.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='table' 
+                SELECT name FROM sqlite_master
+                WHERE type='table'
                 AND name NOT LIKE 'sqlite_%'
-                AND name NOT IN ('student_groups')  -- Исключаем таблицу с группами студентов
+                AND name NOT IN ('student_groups', 'schedule')  -- Исключаем таблицу с группами студентов и расписание
                 ORDER BY name
             """)
 
@@ -479,7 +487,7 @@ class MainWindow(QMainWindow):
             'teachers': 'Учителя',
             'teacher_subjects': 'Учителя-Предметы',
             'time_slots': 'Временные слоты',
-            'schedule': 'Расписание'
+            # 'schedule': 'Расписание'  # Эту строку можно удалить, так как мы исключаем таблицу
         }
         return translations.get(table_name, table_name)
 
@@ -518,6 +526,7 @@ sys.exit(app.exec())
 
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось запустить возможности администратора: {str(e)}")
+
 
     def show_schedule_window(self):
         """Показывает окно составления расписания"""
@@ -593,25 +602,40 @@ sys.exit(app.exec())
                 # Получаем информацию о столбцах таблицы
                 cursor.execute(f"PRAGMA table_info({self.current_table_name})")
                 columns = cursor.fetchall()
+
+                # Проверяем, что столбец существует
+                if col >= len(columns):
+                    print(f"Ошибка: Индекс столбца {col} выходит за пределы для таблицы {self.current_table_name}")
+                    return
+
                 column_name = columns[col][1]
 
                 # Получаем первичный ключ таблицы (предполагаем, что это первый столбец)
+                if not columns:
+                    print(f"Ошибка: Не удалось получить информацию о столбцах для таблицы {self.current_table_name}")
+                    return
+
                 pk_column = columns[0][1]
-                pk_value = self.table.item(row, 0).text()
+                pk_item = self.table.item(row, 0)
+
+                if not pk_item:
+                     print(f"Ошибка: Не удалось получить значение первичного ключа для строки {row} в таблице {self.current_table_name}")
+                     return
+
+                pk_value = pk_item.text()
 
                 # Обновляем данные в базе
                 cursor.execute(f"""
-                    UPDATE {self.current_table_name} 
-                    SET {column_name} = ? 
+                    UPDATE {self.current_table_name}
+                    SET {column_name} = ?
                     WHERE {pk_column} = ?
                 """, (item.text(), pk_value))
 
                 # Для таблиц с триггерами обновления временных меток
-                if self.current_table_name in ['classes', 'subjects', 'classrooms', 'teachers', 'time_slots',
-                                               'schedule']:
+                if self.current_table_name in ['classes', 'subjects', 'classrooms', 'teachers', 'time_slots']:
                     cursor.execute(f"""
-                        UPDATE {self.current_table_name} 
-                        SET updated_at = CURRENT_TIMESTAMP 
+                        UPDATE {self.current_table_name}
+                        SET updated_at = CURRENT_TIMESTAMP
                         WHERE {pk_column} = ?
                     """, (pk_value,))
 
@@ -619,6 +643,8 @@ sys.exit(app.exec())
 
             except sqlite3.Error as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось обновить данные: {str(e)}")
+            except Exception as e:
+                 QMessageBox.critical(self, "Ошибка", f"Произошла непредвиденная ошибка при обновлении данных: {str(e)}")
             finally:
                 if conn:
                     conn.close()
