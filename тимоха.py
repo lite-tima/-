@@ -1,125 +1,254 @@
-# Импорт необходимых модулей
-import sys  # Для работы с системными функциями
-
-# Импорт компонентов PyQt6
+import sys
+import sqlite3
 from PyQt6.QtWidgets import (
-    QApplication,  # Главный класс приложения
-    QMainWindow,  # Класс главного окна
-    QTableWidget,  # Виджет таблицы
-    QTableWidgetItem,  # Элемент таблицы
-    QVBoxLayout,  # Вертикальный макет
-    QWidget,  # Базовый виджет
-    QLabel,  # Текстовая метка
-    QHBoxLayout,  # Горизонтальный макет
-    QScrollArea,  # Область прокрутки
-    QPushButton,  # Кнопка
-    QDialog,  # Диалоговое окно
-    QComboBox,  # Выпадающий список
-    QLineEdit,  # Поле ввода
-    QFormLayout,  # Макет формы
-    QGridLayout  # Сеточный макет
+    QApplication, QMainWindow, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget, QLabel, QHBoxLayout, QScrollArea, QPushButton, QDialog,
+    QComboBox, QLineEdit, QFormLayout, QGridLayout, QStyledItemDelegate,
+    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, QSize  # Основные константы и классы Qt
+from PyQt6.QtCore import Qt, QSize, QSortFilterProxyModel, QStringListModel, QRectF
 from PyQt6.QtGui import (
-    QColor,  # Цвет
-    QPainter,  # Для рисования
-    QPainterPath,  # Путь для рисования
-    QFont,  # Шрифт
-    QFontMetrics,  # Метрики шрифта
-    QIcon,  # Иконка
-    QPixmap  # Изображение
+    QColor, QPainter, QPainterPath, QFont, QFontMetrics, QIcon, QPixmap,
+    QStandardItemModel, QStandardItem
 )
-from PyQt6.QtCore import QRectF  # Прямоугольник с float-координатами
+
 
 
 class ClassSetupDialog(QDialog):
-    """Диалоговое окно для настройки классов (11 строк с настройками)"""
-
     def __init__(self, parent=None):
-        # Инициализация диалогового окна
-        super().__init__(parent)  # Вызов конструктора родительского класса
-        self.setWindowTitle("Настройка классов")  # Заголовок окна
-        self.setFixedSize(500, 500)  # Фиксированный размер окна (ширина, высота)
+        super().__init__(parent)
+        self.setWindowTitle("Настройка классов")
+        self.setFixedSize(400, 300)
 
-        # Основной вертикальный макет для диалога
         layout = QVBoxLayout(self)
 
-        # Список для хранения элементов управления (выпадающих списков)
-        self.class_entries = []
+        # Получаем список классов из базы данных
+        self.db_conn = sqlite3.connect('school_schedule.db')
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT Название FROM Классы ORDER BY Название")
+        existing_classes = [row[0] for row in cursor.fetchall()]
 
-        # Создаем 11 строк (для классов с 1 по 11)
-        for class_num in range(1, 12):
-            # Горизонтальный макет для одной строки
-            row_layout = QHBoxLayout()
+        # Создаем модель для списка классов
+        self.model = QStringListModel()
+        self.model.setStringList(existing_classes)
 
-            # Метка с номером класса
-            label = QLabel(f"{class_num} класс:")
+        # Виджет для отображения и редактирования списка классов
+        self.list_view = QListView()
+        self.list_view.setModel(self.model)
+        self.list_view.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
 
-            # Выпадающий список для начальной буквы
-            letter_from = QComboBox()
-            letter_from.addItem("нету")  # Вариант по умолчанию
-            # Добавляем буквы от 'а' до 'е' (коды 1072-1077 в Unicode)
-            letter_from.addItems([chr(i) for i in range(ord('а'), ord('ф') +1)])
+        # Кнопки для управления списком
+        button_layout = QHBoxLayout()
+        add_button = QPushButton("Добавить")
+        add_button.clicked.connect(self.add_class)
+        remove_button = QPushButton("Удалить")
+        remove_button.clicked.connect(self.remove_class)
+        button_layout.addWidget(add_button)
+        button_layout.addWidget(remove_button)
 
-            # Выпадающий список для конечной буквы
-            letter_to = QComboBox()
-            letter_to.addItem("нету")
-            letter_to.addItems([chr(i) for i in range(ord('а'), ord('ф') +1)])
+        # Кнопки OK/Отмена
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.save_classes)
+        button_box.rejected.connect(self.reject)
 
-            # Добавляем элементы в строку
-            row_layout.addWidget(label)  # Метка класса
-            row_layout.addWidget(QLabel("от:"))  # Метка "от"
-            row_layout.addWidget(letter_from)  # Выпадающий список "от"
-            row_layout.addWidget(QLabel("до:"))  # Метка "до"
-            row_layout.addWidget(letter_to)  # Выпадающий список "до"
+        layout.addWidget(QLabel("Список классов:"))
+        layout.addWidget(self.list_view)
+        layout.addLayout(button_layout)
+        layout.addWidget(button_box)
 
-            # Добавляем строку в основной макет
-            layout.addLayout(row_layout)
-            # Сохраняем элементы управления для этой строки
-            self.class_entries.append((letter_from, letter_to))
+    def add_class(self):
+        """Добавляет новый класс в список"""
+        row = self.model.rowCount()
+        self.model.insertRow(row)
+        index = self.model.index(row)
+        self.list_view.setCurrentIndex(index)
+        self.list_view.edit(index)
 
-        # Создаем макет для кнопок
-        buttons_layout = QHBoxLayout()
+    def remove_class(self):
+        """Удаляет выбранный класс из списка"""
+        index = self.list_view.currentIndex()
+        if index.isValid():
+            self.model.removeRow(index.row())
 
-        # Кнопка OK
-        self.ok_button = QPushButton("OK")
-        self.ok_button.clicked.connect(self.accept)  # При нажатии закрываем с результатом OK
+    def save_classes(self):
+        """Сохраняет изменения классов в базу данных"""
+        try:
+            cursor = self.db_conn.cursor()
 
-        # Кнопка Отмена
-        self.cancel_button = QPushButton("Отмена")
-        self.cancel_button.clicked.connect(self.reject)  # При нажатии закрываем без результата
+            # Получаем текущий список классов из БД
+            cursor.execute("SELECT Название FROM Классы")
+            db_classes = {row[0] for row in cursor.fetchall()}
 
-        # Добавляем кнопки в макет
-        buttons_layout.addWidget(self.ok_button)
-        buttons_layout.addWidget(self.cancel_button)
+            # Получаем новые классы из модели
+            new_classes = set(self.model.stringList())
 
-        # Добавляем макет кнопок в основной макет
-        layout.addLayout(buttons_layout)
+            # Классы для добавления
+            to_add = new_classes - db_classes
+            for class_name in to_add:
+                cursor.execute("INSERT INTO Классы (Название) VALUES (?)", (class_name,))
+
+            # Классы для удаления
+            to_remove = db_classes - new_classes
+            for class_name in to_remove:
+                cursor.execute("DELETE FROM Классы WHERE Название = ?", (class_name,))
+
+            self.db_conn.commit()
+            self.accept()
+        except Exception as e:
+            print(f"Ошибка при сохранении классов: {e}")
+            self.db_conn.rollback()
 
     def get_classes(self):
-        """Генерирует список классов на основе выбранных параметров"""
-        classes = []  # Список для хранения результатов
+        """Возвращает список классов"""
+        return self.model.stringList()
 
-        # Перебираем все строки (class_num начинается с 1)
-        for class_num, (letter_from, letter_to) in enumerate(self.class_entries, 1):
-            # Получаем выбранные значения
-            from_text = letter_from.currentText()
-            to_text = letter_to.currentText()
+    def closeEvent(self, event):
+        """Закрывает соединение с БД при закрытии диалога"""
+        self.db_conn.close()
+        super().closeEvent(event)
 
-            # Пропускаем если выбрано "нету" в любом из списков
-            if from_text == "нету" or to_text == "нету":
-                continue
 
-            # Получаем коды символов для выбранных букв
-            from_code = ord(from_text)
-            to_code = ord(to_text)
+class ScheduleItemDelegate(QStyledItemDelegate):
+    def __init__(self, db_conn, parent=None):
+        super().__init__(parent)
+        self.db_conn = db_conn
+        self.current_editor = None
 
-            # Генерируем все буквы в диапазоне (учитываем порядок)
-            for letter_code in range(min(from_code, to_code), max(from_code, to_code) + 1):
-                # Формируем название класса (например "5а") и добавляем в список
-                classes.append(f"{class_num}{chr(letter_code)}")
+    def createEditor(self, parent, option, index):
+        # Создаем выпадающий список для редактора
+        editor = QComboBox(parent)
+        editor.setEditable(True)
+        editor.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
 
-        return classes
+        # Получаем список всех предметов из БД
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT Название, Сокращение FROM Предметы")
+        subjects = [f"{short} ({full})" for full, short in cursor.fetchall()]
+
+        # Настраиваем автодополнение
+        completer = QCompleter(subjects, editor)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        editor.setCompleter(completer)
+
+        editor.addItems(subjects)
+        self.current_editor = editor
+        return editor
+
+    def setModelData(self, editor, model, index):
+        # Получаем выбранный текст (например: "Мат (Математика)")
+        text = editor.currentText()
+        if not text:
+            return
+
+        # Извлекаем сокращенное название
+        short_name = text.split(" ")[0]
+
+        # Получаем полное название предмета из БД
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT Название FROM Предметы WHERE Сокращение = ?", (short_name,))
+        full_name = cursor.fetchone()[0]
+
+        # Получаем учителей для этого предмета
+        cursor.execute("""
+            SELECT Учителя.ФИО 
+            FROM Учителя
+            JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
+            JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
+            WHERE Предметы.Сокращение = ?
+        """, (short_name,))
+        teachers = [row[0] for row in cursor.fetchall()]
+
+        # Получаем кабинеты для этого предмета
+        cursor.execute("""
+            SELECT DISTINCT Кабинеты.Номер 
+            FROM Кабинеты
+            JOIN Предметы ON Кабинеты.id = Предметы.Основной_кабинет_id
+            WHERE Предметы.Сокращение = ?
+            UNION
+            SELECT DISTINCT Кабинеты.Номер 
+            FROM Кабинеты
+            JOIN Учителя ON Кабинеты.id = Учителя.Основной_кабинет_id
+            JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
+            JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
+            WHERE Предметы.Сокращение = ?
+        """, (short_name, short_name))
+        rooms = [row[0] for row in cursor.fetchall()]
+
+        # Создаем диалог выбора учителя и кабинета
+        dialog = TeacherRoomDialog(teachers, rooms, editor)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            teacher, room = dialog.get_selection()
+
+            # Формируем текст для ячейки
+            cell_text = f"{full_name}"
+            if teacher:
+                cell_text += f" ({teacher}"
+                if room:
+                    cell_text += f", {room}"
+                cell_text += ")"
+            elif room:
+                cell_text += f" ({room})"
+
+            # Устанавливаем значение в модель
+            model.setData(index, cell_text, Qt.ItemDataRole.EditRole)
+            model.setData(index, QColor(255, 230, 230), Qt.ItemDataRole.BackgroundRole)
+
+
+class TeacherRoomDialog(QDialog):
+    def __init__(self, teachers, rooms, parent=None):
+        super().__init__(parent)
+        self.selected_teacher = None
+        self.selected_room = None
+
+        self.setWindowTitle("Выбор преподавателя и кабинета")
+        self.setFixedSize(400, 300)
+
+        layout = QVBoxLayout(self)
+
+        # Создаем таблицу для выбора
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Преподаватель", "Кабинет"])
+        self.table.setRowCount(max(len(teachers), len(rooms)))
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        # Заполняем таблицу преподавателями
+        for row, teacher in enumerate(teachers):
+            item = QTableWidgetItem(teacher)
+            self.table.setItem(row, 0, item)
+
+        # Заполняем таблицу кабинетами
+        for row, room in enumerate(rooms):
+            item = QTableWidgetItem(room)
+            self.table.setItem(row, 1, item)
+
+        # Кнопки
+        button_box = QHBoxLayout()
+        ok_button = QPushButton("OK")
+        ok_button.clicked.connect(self.accept_selection)
+        cancel_button = QPushButton("Отмена")
+        cancel_button.clicked.connect(self.reject)
+
+        button_box.addWidget(ok_button)
+        button_box.addWidget(cancel_button)
+
+        layout.addWidget(self.table)
+        layout.addLayout(button_box)
+
+    def accept_selection(self):
+        selected_row = self.table.currentRow()
+        if selected_row >= 0:
+            teacher_item = self.table.item(selected_row, 0)
+            room_item = self.table.item(selected_row, 1)
+            self.selected_teacher = teacher_item.text() if teacher_item else None
+            self.selected_room = room_item.text() if room_item else None
+        self.accept()
+
+    def get_selection(self):
+        return self.selected_teacher, self.selected_room
 
 
 class VerticalDayLabel(QLabel):
@@ -175,8 +304,12 @@ class VerticalDayLabel(QLabel):
 
 class ScheduleApp(QMainWindow):
     """Главное окно приложения с расписанием"""
+
     def __init__(self):
         super().__init__()
+
+        # Инициализация подключения к БД
+        self.db_conn = sqlite3.connect('school_schedule.db')
 
         # Расписание звонков (по дням недели)
         self.schedule_times = {
@@ -384,6 +517,13 @@ class ScheduleApp(QMainWindow):
                         time, desc = self.schedule_times[day_name][lesson]
                         self.table.item(row, 0).setToolTip(f"{desc}\n{time}")
 
+            # Устанавливаем кастомный делегат для редактируемых ячеек
+            delegate = ScheduleItemDelegate(self.db_conn)
+
+            # Для всех колонок с классами (кроме первой колонки с номерами уроков)
+            for col in range(1, self.table.columnCount()):
+                self.table.setItemDelegateForColumn(col, delegate)
+
             # Создаем фиксированную таблицу
             self.frozen_table = QTableWidget()
             self.frozen_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -405,20 +545,17 @@ class ScheduleApp(QMainWindow):
             header_item = QTableWidgetItem("Урок")  # Заголовок номер урока
             header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Выравниваем по центру
             header_item.setFlags(header_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Запрещаем редактирование
-            self.frozen_table.setItem(0, 0,
-                                      header_item)  # Устанавливаем заголовок в первую ячейку фиксированной таблицы
+            self.frozen_table.setItem(0, 0, header_item)
 
             # Устанавливаем фиксированную высоту для заголовка
-            header_fixed_height = 25  # Укажите желаемый размер высоты заголовка в пикселях
-            self.frozen_table.setRowHeight(0,
-                                           header_fixed_height)  # Устанавливаем высоту заголовка фиксированной таблицы
+            header_fixed_height = 25
+            self.frozen_table.setRowHeight(0, header_fixed_height)
 
             # Копируем данные из основной таблицы
             for row in range(1, self.table.rowCount() + 1):
                 item = self.table.item(row - 1, 0).clone()
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.frozen_table.setItem(row, 0, item)
-                # Устанавливаем высоту остальных строк фиксированной таблицы в 28 пикселей
                 self.frozen_table.setRowHeight(row, 31)
 
             self.frozen_table.setColumnWidth(0, self.first_column_width)
@@ -472,6 +609,7 @@ class ScheduleApp(QMainWindow):
             if item:
                 # Устанавливаем tooltip для ячейки
                 self.table.setToolTip(f"{day_name}\nУрок {lesson + 1}: {time}\n{desc}")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
