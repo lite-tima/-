@@ -4,17 +4,17 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget, QLabel, QHBoxLayout, QScrollArea, QPushButton, QDialog,
     QComboBox, QLineEdit, QFormLayout, QGridLayout, QStyledItemDelegate,
-    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox
+    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox, QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt, QSize, QSortFilterProxyModel, QStringListModel, QRectF
 from PyQt6.QtGui import (
     QColor, QPainter, QPainterPath, QFont, QFontMetrics, QIcon, QPixmap,
-    QStandardItemModel, QStandardItem
+    QStandardItemModel, QStandardItem, QPen
 )
 
 
-
 class ClassSetupDialog(QDialog):
+    """Диалоговое окно для настройки списка классов"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Настройка классов")
@@ -109,23 +109,22 @@ class ClassSetupDialog(QDialog):
 
 
 class ScheduleItemDelegate(QStyledItemDelegate):
+    """Делегат для отображения и редактирования ячеек расписания"""
     def __init__(self, db_conn, parent=None):
         super().__init__(parent)
         self.db_conn = db_conn
         self.current_editor = None
 
     def createEditor(self, parent, option, index):
-        # Создаем выпадающий список для редактора
+        """Создает редактор для ячейки - выпадающий список с предметами"""
         editor = QComboBox(parent)
         editor.setEditable(True)
         editor.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
 
-        # Получаем список всех предметов из БД
         cursor = self.db_conn.cursor()
         cursor.execute("SELECT Название, Сокращение FROM Предметы")
         subjects = [f"{short} ({full})" for full, short in cursor.fetchall()]
 
-        # Настраиваем автодополнение
         completer = QCompleter(subjects, editor)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
@@ -135,119 +134,210 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         self.current_editor = editor
         return editor
 
+    def paint(self, painter, option, index):
+        """Упрощенная отрисовка без границ, только заливка"""
+        # Получаем данные о конфликте
+        conflict_type = index.data(Qt.ItemDataRole.UserRole + 1)
+
+        # Сохраняем оригинальные настройки
+        painter.save()
+
+        # Рисуем стандартное содержимое ячейки
+        super().paint(painter, option, index)
+
+        # Восстанавливаем настройки
+        painter.restore()
+
+        # Восстанавливаем настройки
+        painter.restore()
+
     def setModelData(self, editor, model, index):
-        # Получаем выбранный текст (например: "Мат (Математика)")
         text = editor.currentText()
         if not text:
             return
 
-        # Извлекаем сокращенное название
         short_name = text.split(" ")[0]
 
-        # Получаем полное название предмета из БД
         cursor = self.db_conn.cursor()
         cursor.execute("SELECT Название FROM Предметы WHERE Сокращение = ?", (short_name,))
-        full_name = cursor.fetchone()[0]
+        result = cursor.fetchone()
 
-        # Получаем учителей для этого предмета
+        if not result:
+            return
+
+        full_name = result[0]  # Полное название предмета
+
+        # Получаем данные для диалога
+        cursor.execute("SELECT ФИО FROM Учителя")
+        all_teachers = [row[0] for row in cursor.fetchall()]
+
         cursor.execute("""
-            SELECT Учителя.ФИО 
-            FROM Учителя
+            SELECT Учителя.ФИО FROM Учителя
             JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
             JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
-            WHERE Предметы.Сокращение = ?
-        """, (short_name,))
-        teachers = [row[0] for row in cursor.fetchall()]
+            WHERE Предметы.Сокращение = ?""", (short_name,))
+        subject_teachers = [row[0] for row in cursor.fetchall()]
 
-        # Получаем кабинеты для этого предмета
+        cursor.execute("SELECT Номер FROM Кабинеты")
+        all_rooms = [str(row[0]) for row in cursor.fetchall()]
+
         cursor.execute("""
-            SELECT DISTINCT Кабинеты.Номер 
-            FROM Кабинеты
+            SELECT DISTINCT Кабинеты.Номер FROM Кабинеты
             JOIN Предметы ON Кабинеты.id = Предметы.Основной_кабинет_id
             WHERE Предметы.Сокращение = ?
             UNION
-            SELECT DISTINCT Кабинеты.Номер 
-            FROM Кабинеты
+            SELECT DISTINCT Кабинеты.Номер FROM Кабинеты
             JOIN Учителя ON Кабинеты.id = Учителя.Основной_кабинет_id
             JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
             JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
-            WHERE Предметы.Сокращение = ?
-        """, (short_name, short_name))
-        rooms = [row[0] for row in cursor.fetchall()]
+            WHERE Предметы.Сокращение = ?""", (short_name, short_name))
+        subject_rooms = [str(row[0]) for row in cursor.fetchall()]
 
-        # Создаем диалог выбора учителя и кабинета
-        dialog = TeacherRoomDialog(teachers, rooms, editor)
+        dialog = TeacherRoomDialog(
+            all_teachers=all_teachers,
+            all_rooms=all_rooms,
+            recommended_teachers=subject_teachers,
+            recommended_rooms=subject_rooms,
+            parent=editor
+        )
+
         if dialog.exec() == QDialog.DialogCode.Accepted:
             teacher, room = dialog.get_selection()
 
-            # Формируем текст для ячейки
-            cell_text = f"{full_name}"
-            if teacher:
-                cell_text += f" ({teacher}"
-                if room:
-                    cell_text += f", {room}"
-                cell_text += ")"
-            elif room:
-                cell_text += f" ({room})"
+            # Сохраняем ВСЕ данные в UserRole
+            full_data = {
+                'subject': full_name,
+                'teacher': teacher,
+                'room': room
+            }
+            model.setData(index, full_data, Qt.ItemDataRole.UserRole)
 
-            # Устанавливаем значение в модель
-            model.setData(index, cell_text, Qt.ItemDataRole.EditRole)
-            model.setData(index, QColor(255, 230, 230), Qt.ItemDataRole.BackgroundRole)
+            # Отображаем только "ПредметКабинет"
+            display_text = f"{full_name}{room}" if room else full_name
+            model.setData(index, display_text, Qt.ItemDataRole.DisplayRole)
+
+            # Устанавливаем цвета
+            model.setData(index, QColor(127, 111, 102), Qt.ItemDataRole.BackgroundRole)
+            model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
+
+            # Проверяем конфликты
+            self.parent().check_teacher_conflicts()
 
 
 class TeacherRoomDialog(QDialog):
-    def __init__(self, teachers, rooms, parent=None):
+    """Диалог выбора учителя и кабинета для предмета"""
+    def __init__(self, all_teachers, all_rooms, recommended_teachers=None, recommended_rooms=None, parent=None):
         super().__init__(parent)
         self.selected_teacher = None
         self.selected_room = None
 
         self.setWindowTitle("Выбор преподавателя и кабинета")
-        self.setFixedSize(400, 300)
+        self.setFixedSize(600, 400)
 
         layout = QVBoxLayout(self)
 
-        # Создаем таблицу для выбора
-        self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Преподаватель", "Кабинет"])
-        self.table.setRowCount(max(len(teachers), len(rooms)))
-        self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Основной макет с выбором учителя и кабинета
+        main_layout = QHBoxLayout()
 
-        # Заполняем таблицу преподавателями
-        for row, teacher in enumerate(teachers):
-            item = QTableWidgetItem(teacher)
-            self.table.setItem(row, 0, item)
+        # Панель выбора учителя
+        teacher_layout = QVBoxLayout()
+        teacher_layout.addWidget(QLabel("Выберите преподавателя:"))
 
-        # Заполняем таблицу кабинетами
-        for row, room in enumerate(rooms):
-            item = QTableWidgetItem(room)
-            self.table.setItem(row, 1, item)
+        # Список всех учителей с выделением рекомендуемых
+        self.teacher_list = QListWidget()
+        self.teacher_list.setStyleSheet("""
+            QListView {
+                show-decoration-selected: 1;
+            }
+            QListView::item:selected {
+                background-color: rgb(91,80,72);
+                color: white;
+            }
+        """)
 
-        # Кнопки
-        button_box = QHBoxLayout()
-        ok_button = QPushButton("OK")
-        ok_button.clicked.connect(self.accept_selection)
-        cancel_button = QPushButton("Отмена")
-        cancel_button.clicked.connect(self.reject)
+        for teacher in all_teachers:
+            item = QListWidgetItem(teacher)
+            if recommended_teachers and teacher in recommended_teachers:
+                item.setBackground(QColor(171, 131, 105))
+                item.setToolTip("Рекомендуемый преподаватель для этого предмета")
+            self.teacher_list.addItem(item)
 
-        button_box.addWidget(ok_button)
-        button_box.addWidget(cancel_button)
+        teacher_layout.addWidget(self.teacher_list)
 
-        layout.addWidget(self.table)
-        layout.addLayout(button_box)
+        # Поле поиска учителя
+        self.teacher_search = QLineEdit()
+        self.teacher_search.setPlaceholderText("Поиск преподавателя...")
+        self.teacher_search.textChanged.connect(self.filter_teachers)
+        teacher_layout.addWidget(self.teacher_search)
+
+        # Панель выбора кабинета
+        room_layout = QVBoxLayout()
+        room_layout.addWidget(QLabel("Выберите кабинет:"))
+
+        # Список всех кабинетов с выделением рекомендуемых
+        self.room_list = QListWidget()
+        self.room_list.setStyleSheet("""
+            QListView {
+                show-decoration-selected: 1;
+            }
+            QListView::item:selected {
+                background-color: rgb(91,80,72);
+                color: white;
+            }
+        """)
+
+        for room in all_rooms:
+            item = QListWidgetItem(room)
+            if recommended_rooms and room in recommended_rooms:
+                item.setBackground(QColor(171, 131, 105))
+                item.setToolTip("Рекомендуемый кабинет для этого предмета")
+            self.room_list.addItem(item)
+
+        room_layout.addWidget(self.room_list)
+
+        # Поле поиска кабинета
+        self.room_search = QLineEdit()
+        self.room_search.setPlaceholderText("Поиск кабинета...")
+        self.room_search.textChanged.connect(self.filter_rooms)
+        room_layout.addWidget(self.room_search)
+
+        # Добавляем обе панели в основной макет
+        main_layout.addLayout(teacher_layout)
+        main_layout.addLayout(room_layout)
+
+        # Кнопки OK/Отмена
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.accept_selection)
+        button_box.rejected.connect(self.reject)
+
+        # Добавляем все в основной layout
+        layout.addLayout(main_layout)
+        layout.addWidget(button_box)
+
+    def filter_teachers(self, text):
+        """Фильтрация списка учителей по введенному тексту"""
+        for i in range(self.teacher_list.count()):
+            item = self.teacher_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+
+    def filter_rooms(self, text):
+        """Фильтрация списка кабинетов по введенному тексту"""
+        for i in range(self.room_list.count()):
+            item = self.room_list.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
 
     def accept_selection(self):
-        selected_row = self.table.currentRow()
-        if selected_row >= 0:
-            teacher_item = self.table.item(selected_row, 0)
-            room_item = self.table.item(selected_row, 1)
-            self.selected_teacher = teacher_item.text() if teacher_item else None
-            self.selected_room = room_item.text() if room_item else None
+        """Обработка выбора учителя и кабинета"""
+        teacher_item = self.teacher_list.currentItem()
+        room_item = self.room_list.currentItem()
+
+        self.selected_teacher = teacher_item.text() if teacher_item else None
+        self.selected_room = room_item.text() if room_item else None
+
         self.accept()
 
     def get_selection(self):
+        """Возвращает выбранные значения"""
         return self.selected_teacher, self.selected_room
 
 
@@ -255,50 +345,34 @@ class VerticalDayLabel(QLabel):
     """Вертикальная метка дня недели с закругленным фоном"""
 
     def __init__(self, text):
-        # Инициализация метки
-        super().__init__(text)  # Вызов конструктора QLabel
-
-        # Настройка шрифта
+        super().__init__(text)
         font = QFont()
-        font.setPointSize(10)  # Размер шрифта 10 пунктов
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)  # Расстояние между буквами 2px
-        self.setFont(font)  # Применяем шрифт к метке
+        font.setPointSize(10)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+        self.setFont(font)
 
     def paintEvent(self, event):
-        """Кастомная отрисовка с повернутым текстом"""
-        # Создаем объект для рисования
+        """Отрисовывает вертикальный текст с закругленным фоном"""
         painter = QPainter(self)
-        # Включаем сглаживание для плавных линий
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Создаем путь для рисования фона
         path = QPainterPath()
-        # Прямоугольник фона с отступами 2px от краев
         rect = QRectF(2, 2, self.width() - 4, self.height() - 4)
-        # Добавляем закругленный прямоугольник (радиус 8px)
         path.addRoundedRect(rect, 8, 8)
 
-        # Рисуем фон без контура
         painter.setPen(Qt.PenStyle.NoPen)
-        # Заливаем светло-серым цветом (RGB 230,230,230)
-        painter.fillPath(path, QColor(230, 230, 230))
-        # Отрисовываем путь
+        painter.fillPath(path, QColor(251, 206, 177))
         painter.drawPath(path)
 
-        # Настраиваем цвет текста (темно-серый)
         painter.setPen(QColor(70, 70, 70))
-        # Поворачиваем систему координат на 90° против часовой стрелки
         painter.rotate(-90)
 
-        # Получаем метрики шрифта для точного позиционирования
         fm = QFontMetrics(self.font())
-        # Ширина текста в пикселях
         text_width = fm.horizontalAdvance(self.text())
-        # Рисуем текст в повернутой системе координат
         painter.drawText(
-            -self.height() + (self.height() - text_width) // 2,  # X (в исходной системе - Y)
-            25,  # Y (в исходной системе - X)
-            self.text()  # Текст для отображения
+            -self.height() + (self.height() - text_width) // 2,
+            25,
+            self.text()
         )
 
 
@@ -313,7 +387,6 @@ class ScheduleApp(QMainWindow):
 
         # Расписание звонков (по дням недели)
         self.schedule_times = {
-            # Понедельник и четверг
             "ПОНЕДЕЛЬНИК": [
                 ("8:30-9:10", "1 урок"),
                 ("9:15-9:55", "2 урок"),
@@ -325,7 +398,6 @@ class ScheduleApp(QMainWindow):
                 ("14:15-14:55", "8 урок"),
                 ("15:00-15:40", "9 урок")
             ],
-            # Вторник, среда, пятница
             "ВТОРНИК": [
                 ("8:00-8:40", "1 урок"),
                 ("8:45-9:25", "2 урок"),
@@ -372,7 +444,6 @@ class ScheduleApp(QMainWindow):
             ]
         }
 
-        # Остальные настройки остаются без изменений
         self.setWindowTitle("Школьное расписание")
         self.window_width = 1500
         self.window_height = 900
@@ -385,93 +456,219 @@ class ScheduleApp(QMainWindow):
 
     def init_ui(self):
         """Инициализация интерфейса"""
-        # Создаем центральный виджет
         self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)  # Устанавливаем как центральный
+        self.setCentralWidget(self.central_widget)
 
-        # Основной горизонтальный макет
         self.main_layout = QHBoxLayout(self.central_widget)
-        # Устанавливаем отступы (лево, верх, право, низ)
         self.main_layout.setContentsMargins(10, 0, 10, 0)
 
-        # Создаем область прокрутки
         self.scroll_area = QScrollArea()
-        # Разрешаем изменение размера внутреннего виджета
         self.scroll_area.setWidgetResizable(True)
-
-        # 2. НАСТРОЙКА ПРОКРУТКИ (можно регулировать)
-        self.scroll_area.setMinimumWidth(self.window_width - 1)  # Ширина области прокрутки
-        # Добавляем область прокрутки в основной макет
+        self.scroll_area.setMinimumWidth(self.window_width - 1)
         self.main_layout.addWidget(self.scroll_area)
 
-        # Создаем контейнер для содержимого (дни + таблица)
         self.container = QWidget()
         self.container_layout = QHBoxLayout(self.container)
-        # Убираем отступы и промежутки между элементами
-        self.container_layout.setContentsMargins(0, 0, 0, 0)
+        self.container_layout.setContentsMargins(5, 0, 0, 0)
         self.container_layout.setSpacing(0)
-        # Устанавливаем контейнер в область прокрутки
         self.scroll_area.setWidget(self.container)
 
-        # Инициализация компонентов
-        self.setup_days_panel()  # Панель с днями недели
-        self.setup_schedule_table()  # Таблица расписания
+        self.setup_days_panel()
+        self.setup_schedule_table()
 
     def show_class_setup(self):
         """Показывает диалог настройки классов"""
-        # Создаем диалоговое окно
         dialog = ClassSetupDialog(self)
-        # Если диалог завершился нажатием OK
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Получаем список классов
             self.classes = dialog.get_classes()
-            # Пересоздаем интерфейс с новыми классами
             self.init_ui()
+
+    def setModelData(self, editor, model, index):
+        text = editor.currentText()
+        if not text:
+            return
+
+        short_name = text.split(" ")[0]
+
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT Название FROM Предметы WHERE Сокращение = ?", (short_name,))
+        result = cursor.fetchone()
+
+        if not result:
+            return
+
+        full_name = result[0]  # Полное название предмета
+
+        # Получаем списки для диалога выбора
+        cursor.execute("SELECT ФИО FROM Учителя")
+        all_teachers = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT Учителя.ФИО 
+            FROM Учителя
+            JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
+            JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
+            WHERE Предметы.Сокращение = ?
+        """, (short_name,))
+        subject_teachers = [row[0] for row in cursor.fetchall()]
+
+        cursor.execute("SELECT Номер FROM Кабинеты")
+        all_rooms = [str(row[0]) for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT DISTINCT Кабинеты.Номер 
+            FROM Кабинеты
+            JOIN Предметы ON Кабинеты.id = Предметы.Основной_кабинет_id
+            WHERE Предметы.Сокращение = ?
+            UNION
+            SELECT DISTINCT Кабинеты.Номер 
+            FROM Кабинеты
+            JOIN Учителя ON Кабинеты.id = Учителя.Основной_кабинет_id
+            JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
+            JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
+            WHERE Предметы.Сокращение = ?
+        """, (short_name, short_name))
+        subject_rooms = [str(row[0]) for row in cursor.fetchall()]
+
+        dialog = TeacherRoomDialog(
+            all_teachers=all_teachers,
+            all_rooms=all_rooms,
+            recommended_teachers=subject_teachers,
+            recommended_rooms=subject_rooms,
+            parent=editor
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            teacher, room = dialog.get_selection()
+
+            # Сохраняем полные данные в UserRole
+            full_data = {
+                'subject': full_name,
+                'teacher': teacher,
+                'room': room
+            }
+            model.setData(index, full_data, Qt.ItemDataRole.UserRole)
+
+            # Отображаем только "ПредметКабинет"
+            display_text = f"{full_name}{room}" if room else full_name
+            model.setData(index, display_text, Qt.ItemDataRole.DisplayRole)
+
+            # Устанавливаем цвета
+            model.setData(index, QColor(127, 111, 102), Qt.ItemDataRole.BackgroundRole)
+            model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
+
+            # Проверяем конфликты
+            if hasattr(self.parent(), 'check_teacher_conflicts'):
+                self.parent().check_teacher_conflicts()
+
+    def displayText(self, value, locale):
+        """Определяет, что отображается в неактивной ячейке"""
+        if isinstance(value, dict):  # Если данные хранятся в UserRole
+            return f"{value['subject']}{value['room']}" if value['room'] else value['subject']
+        return super().displayText(value, locale)
+
+    def createEditor(self, parent, option, index):
+        """Создает редактор с полными данными"""
+        editor = super().createEditor(parent, option, index)
+
+        # Восстанавливаем полные данные при редактировании
+        full_data = index.data(Qt.ItemDataRole.UserRole)
+        if isinstance(full_data, dict):
+            subject = full_data['subject']
+            teacher = full_data.get('teacher', '')
+            room = full_data.get('room', '')
+
+            # Формируем текст для редактора
+            editor_text = f"{subject}"
+            if teacher or room:
+                editor_text += f" ({teacher}"
+                if room:
+                    editor_text += f", {room}"
+                editor_text += ")"
+
+            editor.setCurrentText(editor_text)
+
+        return editor
+
+    def check_teacher_conflicts(self):
+        """Проверка конфликтов с цветовой подсветкой"""
+        # Сбрасываем все выделения
+        for row in range(self.table.rowCount()):
+            for col in range(1, self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item:
+                    item.setBackground(QColor(127, 111, 102))  # Стандартный цвет
+                    item.setData(Qt.ItemDataRole.UserRole + 1, None)
+
+        # Словари для сбора данных
+        teacher_dict = {}  # {строка: {учитель: [ячейки]}}
+        room_dict = {}  # {строка: {кабинет: [ячейки]}}
+
+        # Собираем данные
+        for row in range(self.table.rowCount()):
+            for col in range(1, self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item and item.text():
+                    full_data = item.data(Qt.ItemDataRole.UserRole)
+
+                    if isinstance(full_data, dict):
+                        teacher = full_data.get('teacher')
+                        room = full_data.get('room')
+
+                        # Заполняем словари
+                        if teacher:
+                            teacher_dict.setdefault(row, {}).setdefault(teacher, []).append(item)
+                        if room:
+                            room_dict.setdefault(row, {}).setdefault(room, []).append(item)
+
+        # Проверяем конфликты кабинетов (красный)
+        for row in room_dict:
+            for room in room_dict[row]:
+                if len(room_dict[row][room]) > 1:
+                    for item in room_dict[row][room]:
+                        item.setBackground(QColor(255, 0, 0))  # Красный
+
+        # Проверяем конфликты учителей (розовый)
+        for row in teacher_dict:
+            for teacher in teacher_dict[row]:
+                if len(teacher_dict[row][teacher]) > 1:
+                    for item in teacher_dict[row][teacher]:
+                        # Подсвечиваем только если нет конфликта кабинета
+                        if item.background().color() != QColor(255, 0, 0):
+                            item.setBackground(QColor(205, 132, 157))  # Розовый
 
     def setup_days_panel(self):
         """Панель с днями недели"""
-        self.days_panel = QWidget()  # Создаем виджет для панели дней
+        self.days_panel = QWidget()
+        self.days_panel.setFixedWidth(50)
 
-        # 3. НАСТРОЙКА ПАНЕЛИ ДНЕЙ (можно регулировать)
-        self.days_panel.setFixedWidth(50)  # Ширина панели (было 50)
-
-        # Вертикальный макет для дней
         self.days_layout = QVBoxLayout(self.days_panel)
-        # Устанавливаем отступы (лево, верх, право, низ)
-        self.days_layout.setContentsMargins(10, 22, 10, 0)
-        self.days_layout.setSpacing(0)  # Промежуток между элементами
+        self.days_layout.setContentsMargins(10, 22, 10, 11)
+        self.days_layout.setSpacing(0)
 
-        # Список дней недели
         week_days = ["ПОНЕДЕЛЬНИК", "ВТОРНИК", "СРЕДА", "ЧЕТВЕРГ", "ПЯТНИЦА"]
-        lesson_height = 28  # Высота одной строки с уроком
+        lesson_height = 28
 
-        # Создаем метки для каждого дня
         for day in week_days:
-            label = VerticalDayLabel(day)  # Наша кастомная метка
-            label.setFixedHeight(10 * lesson_height)  # Высота = 10 строк
-            label.setFixedWidth(60)  # Ширина соответствует панели
-            self.days_layout.addWidget(label)  # Добавляем в макет
+            label = VerticalDayLabel(day)
+            label.setFixedHeight(10 * lesson_height)
+            label.setFixedWidth(60)
+            self.days_layout.addWidget(label)
 
-        # Добавляем панель дней в контейнер
         self.container_layout.addWidget(self.days_panel)
 
     def setup_schedule_table(self):
-        """Основной метод для настройки таблицы расписания.
-        Создает таблицу с фиксированным первым столбцом (номера уроков),
-        который остается видимым при горизонтальной прокрутке."""
-
-        # Создаем основную таблицу для отображения расписания
+        """Настройка таблицы расписания"""
         self.table = QTableWidget()
         self.table.setMinimumWidth(self.window_width - 100)
         self.table.setMouseTracking(True)
         self.table.cellEntered.connect(self.show_cell_tooltip)
 
         if not self.classes:
-            # Настроить, если классов нет
+            # Если классы не заданы, показываем кнопку для их добавления
             self.table.setColumnCount(2)
             self.table.setRowCount(1)
 
-            # Кнопка для добавления классов
             add_button = QPushButton()
             add_button.setIcon(QIcon("knopka.png"))
             add_button.setIconSize(QSize(32, 32))
@@ -481,7 +678,7 @@ class ScheduleApp(QMainWindow):
                     padding: 5px;  
                     border: 1px solid #ccc;  
                     border-radius: 4px;  
-                    background-color: #F4A460;  
+                    background-color: #cea182;  
                 }
                 QPushButton:hover {
                     background-color: #E9967A;  
@@ -494,7 +691,7 @@ class ScheduleApp(QMainWindow):
             self.table.horizontalHeader().setStretchLastSection(True)
             self.container_layout.addWidget(self.table)
         else:
-            # Настройка, если классы присутствуют
+            # Если классы заданы, создаем полную таблицу расписания
             self.table.setColumnCount(len(self.classes) + 1)
             self.table.setRowCount(45)
 
@@ -504,6 +701,7 @@ class ScheduleApp(QMainWindow):
             self.table.verticalHeader().setDefaultSectionSize(self.row_height)
             self.table.setColumnWidth(0, self.first_column_width)
 
+            # Заполняем номера уроков и временные интервалы
             for day in range(5):
                 for lesson in range(9):
                     row = day * 9 + lesson
@@ -517,41 +715,36 @@ class ScheduleApp(QMainWindow):
                         time, desc = self.schedule_times[day_name][lesson]
                         self.table.item(row, 0).setToolTip(f"{desc}\n{time}")
 
-            # Устанавливаем кастомный делегат для редактируемых ячеек
-            delegate = ScheduleItemDelegate(self.db_conn)
-
-            # Для всех колонок с классами (кроме первой колонки с номерами уроков)
+            # Устанавливаем делегат для редактирования ячеек
+            delegate = ScheduleItemDelegate(self.db_conn, self)
             for col in range(1, self.table.columnCount()):
                 self.table.setItemDelegateForColumn(col, delegate)
 
-            # Создаем фиксированную таблицу
+            # Создаем закрепленную таблицу для номеров уроков
             self.frozen_table = QTableWidget()
             self.frozen_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.frozen_table.setColumnCount(1)
             self.frozen_table.setRowCount(self.table.rowCount() + 1)
 
-            # Настройка стиля фиксированной таблицы
             self.frozen_table.setStyleSheet("""
                 QTableWidget {
                     border: none;  
-                    background-color: #696969;  
+                    background-color: #a8856b;  
                 }
                 QTableWidget::item {
-                    border-right: 1px solid #696969;  
+                    border-right: 1px solid #000000;  
                 }
             """)
 
-            # Добавляем заголовок в фиксированную таблицу
-            header_item = QTableWidgetItem("Урок")  # Заголовок номер урока
-            header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Выравниваем по центру
-            header_item.setFlags(header_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Запрещаем редактирование
+            header_item = QTableWidgetItem("Урок")
+            header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            header_item.setFlags(header_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.frozen_table.setItem(0, 0, header_item)
 
-            # Устанавливаем фиксированную высоту для заголовка
             header_fixed_height = 25
             self.frozen_table.setRowHeight(0, header_fixed_height)
 
-            # Копируем данные из основной таблицы
+            # Копируем номера уроков из основной таблицы
             for row in range(1, self.table.rowCount() + 1):
                 item = self.table.item(row - 1, 0).clone()
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -563,7 +756,7 @@ class ScheduleApp(QMainWindow):
             self.frozen_table.verticalHeader().hide()
             self.frozen_table.horizontalHeader().hide()
 
-            # Создаем контейнер для обеих таблиц
+            # Создаем контейнер для двух таблиц
             table_container = QWidget()
             container_layout = QHBoxLayout()
             container_layout.addWidget(self.frozen_table)
@@ -572,6 +765,7 @@ class ScheduleApp(QMainWindow):
             container_layout.setContentsMargins(5, 0, 0, 0)
             table_container.setLayout(container_layout)
 
+            # Синхронизируем скроллинг двух таблиц
             self.table.verticalScrollBar().valueChanged.connect(
                 self.frozen_table.verticalScrollBar().setValue
             )
@@ -580,25 +774,26 @@ class ScheduleApp(QMainWindow):
             )
 
             self.container_layout.addWidget(table_container)
-
-            # Скрываем первый столбец основной таблицы
             self.table.setColumnHidden(0, True)
 
-        # Общие настройки таблицы
         self.table.verticalHeader().setVisible(False)
 
+        # Устанавливаем ширину столбцов
         for col in range(1, self.table.columnCount()):
             self.table.setColumnWidth(col, self.column_width)
 
         self.table.verticalHeader().setDefaultSectionSize(self.row_height)
 
+        # Проверяем конфликты после настройки таблицы
+        self.check_teacher_conflicts()
+
     def show_cell_tooltip(self, row, col):
         """Показывает подсказку с временем урока при наведении на ячейку"""
-        if col == 0:  # Только для первой колонки (номера уроков)
+        if col == 0:
             return
 
-        day = row // 9  # Определяем день недели (0-4)
-        lesson = row % 9  # Определяем номер урока (0-8)
+        day = row // 9
+        lesson = row % 9
 
         day_names = ["ПОНЕДЕЛЬНИК", "ВТОРНИК", "СРЕДА", "ЧЕТВЕРГ", "ПЯТНИЦА"]
         day_name = day_names[day]
@@ -607,12 +802,11 @@ class ScheduleApp(QMainWindow):
             time, desc = self.schedule_times[day_name][lesson]
             item = self.table.item(row, 0)
             if item:
-                # Устанавливаем tooltip для ячейки
                 self.table.setToolTip(f"{day_name}\nУрок {lesson + 1}: {time}\n{desc}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = ScheduleApp()
-    window.showFullScreen()  # Открываем окно в полноэкранном режиме
+    window.show()
     sys.exit(app.exec())
