@@ -4,21 +4,22 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget, QLabel, QHBoxLayout, QScrollArea, QPushButton, QDialog,
     QComboBox, QLineEdit, QFormLayout, QGridLayout, QStyledItemDelegate,
-    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox, QListWidget, QListWidgetItem
+    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox, QListWidget, QListWidgetItem, QMessageBox
 )
 from PyQt6.QtCore import Qt, QSize, QSortFilterProxyModel, QStringListModel, QRectF
 from PyQt6.QtGui import (
     QColor, QPainter, QPainterPath, QFont, QFontMetrics, QIcon, QPixmap,
     QStandardItemModel, QStandardItem, QPen
 )
-
+from PyQt6.QtCore import QItemSelectionModel
 
 class ClassSetupDialog(QDialog):
-    """Диалоговое окно для настройки списка классов"""
+    """Диалоговое окно для выбора классов из базы данных"""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Настройка классов")
-        self.setFixedSize(400, 300)
+        self.setWindowTitle("Выбор классов")
+        self.setFixedSize(300, 400)
 
         layout = QVBoxLayout(self)
 
@@ -32,75 +33,31 @@ class ClassSetupDialog(QDialog):
         self.model = QStringListModel()
         self.model.setStringList(existing_classes)
 
-        # Виджет для отображения и редактирования списка классов
+        # Виджет для отображения списка классов
         self.list_view = QListView()
         self.list_view.setModel(self.model)
-        self.list_view.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
 
-        # Кнопки для управления списком
-        button_layout = QHBoxLayout()
-        add_button = QPushButton("Добавить")
-        add_button.clicked.connect(self.add_class)
-        remove_button = QPushButton("Удалить")
-        remove_button.clicked.connect(self.remove_class)
-        button_layout.addWidget(add_button)
-        button_layout.addWidget(remove_button)
+        # Выделяем все классы по умолчанию
+        for i in range(self.model.rowCount()):
+            self.list_view.selectionModel().select(
+                self.model.index(i),
+                QItemSelectionModel.SelectionFlag.Select
+            )
 
         # Кнопки OK/Отмена
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(self.save_classes)
+        button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
-        layout.addWidget(QLabel("Список классов:"))
+        layout.addWidget(QLabel("Выберите классы для отображения:"))
         layout.addWidget(self.list_view)
-        layout.addLayout(button_layout)
         layout.addWidget(button_box)
 
-    def add_class(self):
-        """Добавляет новый класс в список"""
-        row = self.model.rowCount()
-        self.model.insertRow(row)
-        index = self.model.index(row)
-        self.list_view.setCurrentIndex(index)
-        self.list_view.edit(index)
-
-    def remove_class(self):
-        """Удаляет выбранный класс из списка"""
-        index = self.list_view.currentIndex()
-        if index.isValid():
-            self.model.removeRow(index.row())
-
-    def save_classes(self):
-        """Сохраняет изменения классов в базу данных"""
-        try:
-            cursor = self.db_conn.cursor()
-
-            # Получаем текущий список классов из БД
-            cursor.execute("SELECT Название FROM Классы")
-            db_classes = {row[0] for row in cursor.fetchall()}
-
-            # Получаем новые классы из модели
-            new_classes = set(self.model.stringList())
-
-            # Классы для добавления
-            to_add = new_classes - db_classes
-            for class_name in to_add:
-                cursor.execute("INSERT INTO Классы (Название) VALUES (?)", (class_name,))
-
-            # Классы для удаления
-            to_remove = db_classes - new_classes
-            for class_name in to_remove:
-                cursor.execute("DELETE FROM Классы WHERE Название = ?", (class_name,))
-
-            self.db_conn.commit()
-            self.accept()
-        except Exception as e:
-            print(f"Ошибка при сохранении классов: {e}")
-            self.db_conn.rollback()
-
-    def get_classes(self):
-        """Возвращает список классов"""
-        return self.model.stringList()
+    def get_selected_classes(self):
+        """Возвращает список выбранных классов"""
+        indexes = self.list_view.selectedIndexes()
+        return [self.model.data(index, Qt.ItemDataRole.DisplayRole) for index in indexes]
 
     def closeEvent(self, event):
         """Закрывает соединение с БД при закрытии диалога"""
@@ -110,6 +67,7 @@ class ClassSetupDialog(QDialog):
 
 class ScheduleItemDelegate(QStyledItemDelegate):
     """Делегат для отображения и редактирования ячеек расписания"""
+
     def __init__(self, db_conn, parent=None):
         super().__init__(parent)
         self.db_conn = db_conn
@@ -144,9 +102,6 @@ class ScheduleItemDelegate(QStyledItemDelegate):
 
         # Рисуем стандартное содержимое ячейки
         super().paint(painter, option, index)
-
-        # Восстанавливаем настройки
-        painter.restore()
 
         # Восстанавливаем настройки
         painter.restore()
@@ -226,6 +181,7 @@ class ScheduleItemDelegate(QStyledItemDelegate):
 
 class TeacherRoomDialog(QDialog):
     """Диалог выбора учителя и кабинета для предмета"""
+
     def __init__(self, all_teachers, all_rooms, recommended_teachers=None, recommended_rooms=None, parent=None):
         super().__init__(parent)
         self.selected_teacher = None
@@ -385,7 +341,18 @@ class ScheduleApp(QMainWindow):
         # Инициализация подключения к БД
         self.db_conn = sqlite3.connect('school_schedule.db')
 
-        # Расписание звонков (по дням недели)
+        # Проверяем наличие классов в базе данных
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM Классы")
+        has_classes = cursor.fetchone()[0] > 0
+
+        if not has_classes:
+            # Если нет классов, показываем сообщение и закрываем приложение
+            QMessageBox.critical(self, "Ошибка", "В базе данных нет классов. Добавьте классы в таблицу 'Классы'.")
+            self.close()
+            return
+
+        # Инициализация остального интерфейса
         self.schedule_times = {
             "ПОНЕДЕЛЬНИК": [
                 ("8:30-9:10", "1 урок"),
@@ -441,7 +408,7 @@ class ScheduleApp(QMainWindow):
                 ("13:00-13:40", "7 урок"),
                 ("13:45-14:25", "8 урок"),
                 ("15:00-15:40", "9 урок")
-            ]
+            ],
         }
 
         self.setWindowTitle("Школьное расписание")
@@ -452,7 +419,9 @@ class ScheduleApp(QMainWindow):
         self.row_height = 31
         self.setGeometry(100, 100, self.window_width, self.window_height)
         self.classes = []
-        self.init_ui()
+
+        # Показываем диалог выбора классов
+        self.show_class_setup()
 
     def init_ui(self):
         """Инициализация интерфейса"""
@@ -477,118 +446,17 @@ class ScheduleApp(QMainWindow):
         self.setup_schedule_table()
 
     def show_class_setup(self):
-        """Показывает диалог настройки классов"""
+        """Показывает диалог выбора классов"""
         dialog = ClassSetupDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.classes = dialog.get_classes()
-            self.init_ui()
-
-    def setModelData(self, editor, model, index):
-        text = editor.currentText()
-        if not text:
-            return
-
-        short_name = text.split(" ")[0]
-
-        cursor = self.db_conn.cursor()
-        cursor.execute("SELECT Название FROM Предметы WHERE Сокращение = ?", (short_name,))
-        result = cursor.fetchone()
-
-        if not result:
-            return
-
-        full_name = result[0]  # Полное название предмета
-
-        # Получаем списки для диалога выбора
-        cursor.execute("SELECT ФИО FROM Учителя")
-        all_teachers = [row[0] for row in cursor.fetchall()]
-
-        cursor.execute("""
-            SELECT Учителя.ФИО 
-            FROM Учителя
-            JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
-            JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
-            WHERE Предметы.Сокращение = ?
-        """, (short_name,))
-        subject_teachers = [row[0] for row in cursor.fetchall()]
-
-        cursor.execute("SELECT Номер FROM Кабинеты")
-        all_rooms = [str(row[0]) for row in cursor.fetchall()]
-
-        cursor.execute("""
-            SELECT DISTINCT Кабинеты.Номер 
-            FROM Кабинеты
-            JOIN Предметы ON Кабинеты.id = Предметы.Основной_кабинет_id
-            WHERE Предметы.Сокращение = ?
-            UNION
-            SELECT DISTINCT Кабинеты.Номер 
-            FROM Кабинеты
-            JOIN Учителя ON Кабинеты.id = Учителя.Основной_кабинет_id
-            JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
-            JOIN Предметы ON Учителя_Предметы.ID_предмета = Предметы.id
-            WHERE Предметы.Сокращение = ?
-        """, (short_name, short_name))
-        subject_rooms = [str(row[0]) for row in cursor.fetchall()]
-
-        dialog = TeacherRoomDialog(
-            all_teachers=all_teachers,
-            all_rooms=all_rooms,
-            recommended_teachers=subject_teachers,
-            recommended_rooms=subject_rooms,
-            parent=editor
-        )
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            teacher, room = dialog.get_selection()
-
-            # Сохраняем полные данные в UserRole
-            full_data = {
-                'subject': full_name,
-                'teacher': teacher,
-                'room': room
-            }
-            model.setData(index, full_data, Qt.ItemDataRole.UserRole)
-
-            # Отображаем только "ПредметКабинет"
-            display_text = f"{full_name}{room}" if room else full_name
-            model.setData(index, display_text, Qt.ItemDataRole.DisplayRole)
-
-            # Устанавливаем цвета
-            model.setData(index, QColor(127, 111, 102), Qt.ItemDataRole.BackgroundRole)
-            model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
-
-            # Проверяем конфликты
-            if hasattr(self.parent(), 'check_teacher_conflicts'):
-                self.parent().check_teacher_conflicts()
-
-    def displayText(self, value, locale):
-        """Определяет, что отображается в неактивной ячейке"""
-        if isinstance(value, dict):  # Если данные хранятся в UserRole
-            return f"{value['subject']}{value['room']}" if value['room'] else value['subject']
-        return super().displayText(value, locale)
-
-    def createEditor(self, parent, option, index):
-        """Создает редактор с полными данными"""
-        editor = super().createEditor(parent, option, index)
-
-        # Восстанавливаем полные данные при редактировании
-        full_data = index.data(Qt.ItemDataRole.UserRole)
-        if isinstance(full_data, dict):
-            subject = full_data['subject']
-            teacher = full_data.get('teacher', '')
-            room = full_data.get('room', '')
-
-            # Формируем текст для редактора
-            editor_text = f"{subject}"
-            if teacher or room:
-                editor_text += f" ({teacher}"
-                if room:
-                    editor_text += f", {room}"
-                editor_text += ")"
-
-            editor.setCurrentText(editor_text)
-
-        return editor
+            self.classes = dialog.get_selected_classes()
+            if self.classes:
+                self.init_ui()
+            else:
+                QMessageBox.warning(self, "Предупреждение", "Не выбрано ни одного класса.")
+                self.close()
+        else:
+            self.close()
 
     def check_teacher_conflicts(self):
         """Проверка конфликтов с цветовой подсветкой"""
@@ -803,6 +671,11 @@ class ScheduleApp(QMainWindow):
             item = self.table.item(row, 0)
             if item:
                 self.table.setToolTip(f"{day_name}\nУрок {lesson + 1}: {time}\n{desc}")
+
+    def closeEvent(self, event):
+        """Закрывает соединение с БД при закрытии окна"""
+        self.db_conn.close()
+        super().closeEvent(event)
 
 
 if __name__ == '__main__':
