@@ -1,324 +1,362 @@
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
-from io import BytesIO
-import os
-import sys
-import asyncio
+import sqlite3
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters
+)
 
 
-# Настройка бота
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token="7740433474:AAGMa_q92stKOJr5hcUFAn5E6C6Q9yR6wBw")
-dp = Dispatcher(storage=MemoryStorage())
-# Шаблоны таблиц и их полей
-TABLE_TEMPLATES = {
-    "classes": {
-        "fields": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "name": "TEXT NOT NULL",
-        },
-        "followups": {
-            "class_letter": {"field": "letter", "type": "TEXT"},
-            "class_year": {"field": "year", "type": "INTEGER"},
-        },
-        "question_key": "classes",
-    },
-    "subjects": {
-        "fields": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "name": "TEXT NOT NULL",
-        },
-        "followups": {
-            "subject_short_name": {"field": "short_name", "type": "TEXT"},
-        },
-        "question_key": "subjects",
-    },
-    "teachers": {
-        "fields": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "name": "TEXT NOT NULL",
-        },
-        "followups": {
-            "teacher_name_format": {
-                "field": "name_format",
-                "type": "TEXT",
-                "options": ["Полное ФИО", "Фамилия + инициалы"],
-            },
-        },
-        "question_key": "teachers",
-    },
-    "classrooms": {
-        "fields": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "name": "TEXT NOT NULL",
-        },
-        "followups": {
-            "classroom_type": {"field": "type", "type": "TEXT"},
-        },
-        "question_key": "classrooms",
-    },
-}
+from PyQt6.QtWidgets import (
+    QApplication
+)
+import pytz
+from datetime import timezone
 
-# Вопросы и уточнения
-QUESTIONS = [
-    {"text": "Нужны ли классы (например, 5А, 10Б)?", "key": "classes"},
-    {"text": "Нужны ли предметы (математика, физика)?", "key": "subjects"},
-    {"text": "Нужны ли учителя?", "key": "teachers"},
-    {"text": "Нужны ли аудитории (кабинеты)?", "key": "classrooms"},
-    {"text": "Привязывать учителей к предметам?", "key": "link_teacher_subject"},
-    {"text": "Учитывать дни недели в расписании (Пн-Пт)?", "key": "use_weekdays"},
-]
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Уточняющие вопросы
-FOLLOW_UPS = {
-    "classes": [
-        {"text": "Добавлять букву класса (например, 5А)?", "key": "class_letter"},
-        {"text": "Учитывать учебный год для классов?", "key": "class_year"},
-    ],
-    "subjects": [
-        {"text": "Добавлять сокращённые названия предметов (мат., физ-ра)?", "key": "subject_short_name"},
-    ],
-    "teachers": [
-        {"text": "Хранить ФИО полностью (Иванов Алексей) или только фамилию + инициалы (Иванов А.А.)?",
-         "key": "teacher_name_format", "options": ["Полное ФИО", "Фамилия + инициалы"]},
-    ],
-    "classrooms": [
-        {"text": "Указывать тип аудитории (лаборатория, спортзал и т.д.)?", "key": "classroom_type"},
-    ],
+# Константы для состояний разговора
+CHOOSING_SCHOOL, CHOOSING_CLASS, CONFIRM_DELETE = range(3)
+
+# Названия баз данных
+USER_DB = 'BD_TG_BOT.db'
+SCHEDULE_DB = 'school_schedule.db'
+
+# Данные для выбора школы
+SCHOOLS = {
+    "Башкирский Лицей №1 им. С. Зиганшина": "🏫Башкирский Лицей №1 им. С. Зиганшина🏫"
 }
 
 
-@dp.message(Command("restart"))
-async def cmd_restart(message: types.Message):
-    """Перезапускает бота по команде /restart"""
-    await message.answer("🔄 Перезапускаю бота...")
-    os.execv(sys.executable, ['python'] + sys.argv)
+def get_available_classes():
+    """Получаем список всех доступных классов из базы данных расписания"""
+    conn = sqlite3.connect(SCHEDULE_DB)
+    cursor = conn.cursor()
 
-class Form(StatesGroup):
-    waiting_for_answer = State()
-    waiting_for_followup = State()
+    try:
+        cursor.execute("SELECT DISTINCT Название FROM Классы")
+        classes = [row[0] for row in cursor.fetchall()]
+        # Сортируем классы: сначала по номеру, затем по букве
+        classes.sort(key=lambda x: (int(''.join(filter(str.isdigit, x))),
+                                    ''.join(filter(str.isalpha, x))))
+        return classes
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении классов из базы данных: {e}")
+        return []
+    finally:
+        conn.close()
 
 
-def create_yes_no_keyboard():
-    builder = ReplyKeyboardBuilder()
-    builder.add(types.KeyboardButton(text="Да"))
-    builder.add(types.KeyboardButton(text="Нет"))
-    return builder.as_markup(resize_keyboard=True)
+def init_user_database():
+    """Инициализация базы данных пользователей"""
+    conn = sqlite3.connect(USER_DB)
+    cursor = conn.cursor()
 
-
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "🔹 Привет! Я помогу создать базу данных для школьного расписания.\n"
-        "Отвечай на вопросы, а я сгенерирую SQL-файл.",
-        reply_markup=types.ReplyKeyboardRemove()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        school TEXT,
+        class TEXT
     )
-    await state.update_data(current_index=0, answers={})
-    await ask_question(message, state)
+    ''')
+
+    conn.commit()
+    conn.close()
+    logger.info("База данных пользователей инициализирована")
 
 
-async def ask_question(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    current_index = data.get("current_index", 0)
+def is_user_registered(user_id):
+    """Проверяем, зарегистрирован ли пользователь"""
+    conn = sqlite3.connect(USER_DB)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone() is not None
+    conn.close()
+    return result
 
-    if current_index < len(QUESTIONS):
-        question = QUESTIONS[current_index]
-        await state.update_data(current_question=question["key"])
-        await message.answer(question["text"], reply_markup=create_yes_no_keyboard())
-        await state.set_state(Form.waiting_for_answer)
+
+def delete_user(user_id):
+    """Удаляем пользователя из базы данных"""
+    conn = sqlite3.connect(USER_DB)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    logger.info(f"Пользователь {user_id} удален из базы данных")
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало взаимодействия с ботом"""
+    user = update.message.from_user
+    logger.info(f"Пользователь {user.first_name} начал взаимодействие.")
+
+    if is_user_registered(user.id):
+        # Пользователь уже зарегистрирован
+        reply_keyboard = [["Удалить аккаунт", "Оставить"]]
+
+        await update.message.reply_text(
+            "Вы уже зарегистрированы! Хотите удалить аккаунт и зарегистрироваться заново?",
+            reply_markup=ReplyKeyboardMarkup(
+                reply_keyboard,
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+        return CONFIRM_DELETE
     else:
-        await generate_sql(message, state)
+        # Начинаем процесс регистрации
+        reply_keyboard = [[school] for school in SCHOOLS.values()]
+
+        await update.message.reply_text(
+            'Добро пожаловать! Выберите вашу школу:',
+            reply_markup=ReplyKeyboardMarkup(
+                reply_keyboard,
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+        return CHOOSING_SCHOOL
 
 
-@dp.message(Form.waiting_for_answer)
-async def handle_answer(message: types.Message, state: FSMContext):
-    if message.text not in ["Да", "Нет"]:
-        await message.answer("Пожалуйста, выберите 'Да' или 'Нет'", reply_markup=create_yes_no_keyboard())
+async def school_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора школы и переход к выбору класса"""
+    user = update.message.from_user
+    school = update.message.text
+
+    if school not in SCHOOLS.values():
+        await update.message.reply_text(
+            'Пожалуйста, выберите школу из предложенных вариантов.',
+            reply_markup=ReplyKeyboardMarkup(
+                [[school] for school in SCHOOLS.values()],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+        return CHOOSING_SCHOOL
+
+    context.user_data['school'] = school
+    logger.info(f"Пользователь {user.first_name} выбрал школу: {school}")
+
+    # Получаем список доступных классов
+    available_classes = get_available_classes()
+
+    if not available_classes:
+        await update.message.reply_text(
+            'В данный момент нет доступных классов для выбора. Пожалуйста, попробуйте позже.',
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    # Разбиваем классы на строки по 3 для удобного отображения
+    classes_rows = [available_classes[i:i + 3] for i in range(0, len(available_classes), 3)]
+
+    await update.message.reply_text(
+        'Отлично! Теперь выберите ваш класс из списка:',
+        reply_markup=ReplyKeyboardMarkup(
+            classes_rows,
+            one_time_keyboard=True,
+            resize_keyboard=True
+        )
+    )
+
+    return CHOOSING_CLASS
+
+
+async def class_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбранного класса"""
+    user = update.message.from_user
+    selected_class = update.message.text
+
+    # Проверяем, что класс есть в доступных
+    available_classes = get_available_classes()
+    if selected_class not in available_classes:
+        await update.message.reply_text(
+            'Пожалуйста, выберите класс из предложенных вариантов.',
+            reply_markup=ReplyKeyboardMarkup(
+                [available_classes[i:i + 3] for i in range(0, len(available_classes), 3)],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
+        return CHOOSING_CLASS
+
+    school = context.user_data['school']
+
+    # Сохраняем данные в базу
+    conn = sqlite3.connect(USER_DB)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO users (user_id, school, class) VALUES (?, ?, ?)",
+        (user.id, school, selected_class)
+    )
+    conn.commit()
+    conn.close()
+
+    logger.info(f"Регистрация: {user.first_name}, школа {school}, класс {selected_class}")
+
+    await update.message.reply_text(
+        f'🎉 Регистрация завершена! 🎉\n\n'
+        f'🏫 Школа: {school}\n'
+        f'📚 Класс: {selected_class}\n\n'
+        'Теперь вы будете получать уведомления!',
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    return ConversationHandler.END
+
+
+async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка подтверждения удаления аккаунта"""
+    user = update.message.from_user
+    choice = update.message.text
+
+    if choice == "Удалить аккаунт":
+        delete_user(user.id)
+        await update.message.reply_text(
+            "Ваш аккаунт удален. Нажмите /start для новой регистрации.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text(
+            "Ваши данные сохранены. Для изменения удалите аккаунт через /start",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена регистрации"""
+    user = update.message.from_user
+    logger.info(f"Пользователь {user.first_name} отменил регистрацию.")
+    await update.message.reply_text(
+        'Регистрация отменена.',
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка ошибок"""
+    logger.error(f"Ошибка: {context.error}")
+
+
+async def send_schedule_update(context: ContextTypes.DEFAULT_TYPE, message: str):
+    """Отправляет уведомление об изменении расписания всем зарегистрированным пользователям"""
+    conn = sqlite3.connect(USER_DB)
+    cursor = conn.cursor()
+
+    try:
+        # Получаем всех зарегистрированных пользователей
+        cursor.execute("SELECT user_id FROM users")
+        users = cursor.fetchall()
+
+        for user_id in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id[0],
+                    text=message
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить сообщение пользователю {user_id[0]}: {e}")
+
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении пользователей из БД: {e}")
+    finally:
+        conn.close()
+
+
+async def get_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет текущее расписание пользователю"""
+    user_id = update.message.from_user.id
+
+    conn = sqlite3.connect(USER_DB)
+    cursor = conn.cursor()
+    cursor.execute("SELECT class FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+
+    if not result:
+        await update.message.reply_text("Вы не зарегистрированы. Используйте /start")
         return
 
-    data = await state.get_data()
-    question_key = data["current_question"]
-    answers = data.get("answers", {})
+    class_name = result[0]
+    schedule = get_class_schedule(class_name)  # Нужно реализовать эту функцию
 
-    answers[question_key] = message.text == "Да"
-    await state.update_data(answers=answers)
-
-    if message.text == "Да" and question_key in FOLLOW_UPS:
-        await state.update_data(current_followup=0)
-        await ask_followup(message, state)
-    else:
-        await state.update_data(current_index=data.get("current_index", 0) + 1)
-        await ask_question(message, state)
+    await update.message.reply_text(f"📅 Расписание для {class_name}:\n\n{schedule}")
 
 
-async def ask_followup(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    question_key = data["current_question"]
-    followup_index = data["current_followup"]
-    followups = FOLLOW_UPS[question_key]
-
-    if followup_index < len(followups):
-        followup = followups[followup_index]
-        await state.update_data(current_followup_key=followup["key"])
-
-        if "options" in followup:
-            builder = ReplyKeyboardBuilder()
-            for option in followup["options"]:
-                builder.add(types.KeyboardButton(text=option))
-            await message.answer(followup["text"], reply_markup=builder.as_markup(resize_keyboard=True))
-        else:
-            await message.answer(followup["text"], reply_markup=create_yes_no_keyboard())
-
-        await state.set_state(Form.waiting_for_followup)
-    else:
-        await state.update_data(current_index=data.get("current_index", 0) + 1)
-        await ask_question(message, state)
+# Добавьте обработчик в main():
 
 
-@dp.message(Form.waiting_for_followup)
-async def handle_followup(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    question_key = data["current_question"]
-    followup_key = data["current_followup_key"]
+def get_class_schedule(class_name):
+    """Возвращает форматированное расписание для указанного класса"""
+    conn = sqlite3.connect(SCHEDULE_DB)
+    cursor = conn.cursor()
 
-    answers = data.get("answers", {})
-    if f"{question_key}_followups" not in answers:
-        answers[f"{question_key}_followups"] = {}
-
-    current_followup = next((f for f in FOLLOW_UPS[question_key] if f["key"] == followup_key), None)
-
-    if current_followup and "options" in current_followup:
-        if message.text not in current_followup["options"]:
-            builder = ReplyKeyboardBuilder()
-            for option in current_followup["options"]:
-                builder.add(types.KeyboardButton(text=option))
-            await message.answer("Пожалуйста, выберите вариант из предложенных",
-                                 reply_markup=builder.as_markup(resize_keyboard=True))
-            return
-        answers[f"{question_key}_followups"][followup_key] = message.text
-    else:
-        if message.text not in ["Да", "Нет"]:
-            await message.answer("Пожалуйста, выберите 'Да' или 'Нет'", reply_markup=create_yes_no_keyboard())
-            return
-        answers[f"{question_key}_followups"][followup_key] = message.text == "Да"
-
-    await state.update_data(
-        answers=answers,
-        current_followup=data.get("current_followup", 0) + 1
-    )
-    await ask_followup(message, state)
-
-
-async def generate_sql(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    answers = data.get("answers", {})
-    sql_script = "-- SQL-база для школьного расписания\n\n"
-
-    # Генерация основных таблиц
-    for table_name, template in TABLE_TEMPLATES.items():
-        if answers.get(template["question_key"]):
-            sql_script += f"CREATE TABLE {table_name} (\n"
-
-            # Основные поля
-            for field, field_type in template["fields"].items():
-                sql_script += f"    {field} {field_type},\n"
-
-            # Уточняющие поля
-            followups = answers.get(f"{template['question_key']}_followups", {})
-            for followup_key, followup_config in template["followups"].items():
-                if followups.get(followup_key):
-                    field_name = followup_config["field"]
-                    field_type = followup_config["type"]
-                    sql_script += f"    {field_name} {field_type},\n"
-
-            sql_script = sql_script.rstrip(",\n") + "\n);\n\n"
-
-    # Таблица связей учитель-предмет
-    if answers.get("link_teacher_subject") and answers.get("teachers") and answers.get("subjects"):
-        sql_script += """
-CREATE TABLE teacher_subject (
-    teacher_id INTEGER REFERENCES teachers(id),
-    subject_id INTEGER REFERENCES subjects(id),
-    PRIMARY KEY (teacher_id, subject_id)
-);\n\n"""
-
-    # Таблица расписания
-    if answers.get("subjects") and answers.get("classes"):
-        sql_script += """
-CREATE TABLE schedule (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    class_id INTEGER REFERENCES classes(id),
-    subject_id INTEGER REFERENCES subjects(id)"""
-
-        if answers.get("teachers"):
-            sql_script += ",\n    teacher_id INTEGER REFERENCES teachers(id)"
-        if answers.get("classrooms"):
-            sql_script += ",\n    classroom_id INTEGER REFERENCES classrooms(id)"
-        if answers.get("use_weekdays"):
-            sql_script += ",\n    day_of_week INTEGER"
-
-        sql_script += """,
-    lesson_number INTEGER,
-    start_time TIME,
-    end_time TIME
-);\n\n"""
-
-        # Создаем временный файл в памяти
-        sql_file = BytesIO(sql_script.encode('utf-8'))
-        sql_file.seek(0)  # Важно: переводим указатель в начало файла
-
-        # Создаем объект InputFile
-        input_file = types.BufferedInputFile(
-            file=sql_file.read(),
-            filename="school_timetable.sql"
-        )
-
-        # Отправка документа
-        await message.answer("✅ База данных сгенерирована!")
-        await message.answer_document(
-            document=input_file,
-            caption="Ваша SQL-база данных"
-        )
-        await state.clear()
-
-@dp.message(Command("restart"))
-async def cmd_restart(message: types.Message):
-    """Перезапуск бота по команде"""
-    await message.answer("🔄 Перезапускаю бота...")
-    os.execv(sys.executable, [sys.executable] + sys.argv)
-
-# 2. Автоматический перезапуск при ошибках
-async def run_bot():
     try:
-        await dp.start_polling(bot)
-    except Exception as e:
-        logging.error(f"Ошибка: {e}. Перезапуск...")
-        await restart_bot()
+        days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"]
+        result = []
 
-async def restart_bot():
-    """Функция перезапуска"""
-    python = sys.executable
-    os.execl(python, python, *sys.argv)
+        for day_num, day_name in enumerate(days):
+            cursor.execute("""
+                SELECT Урок, Предмет, Учитель, Кабинет 
+                FROM Расписание 
+                WHERE Класс = ? AND День = ?
+                ORDER BY Урок
+            """, (class_name, day_num + 1))
 
-# 3. Основные команды бота
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer("Бот работает! Отправьте /restart для перезапуска")
+            lessons = cursor.fetchall()
+            day_schedule = [f"📅 {day_name}:"]
 
-if __name__ == "__main__":
-    # Запуск с обработкой KeyboardInterrupt
-    while True:
-        try:
-            asyncio.run(run_bot())
-        except KeyboardInterrupt:
-            print("Бот остановлен вручную")
-            break
-        except Exception as e:
-            print(f"Критическая ошибка: {e}. Перезапуск...")
-            continue
+            for lesson in lessons:
+                lesson_num, subject, teacher, room = lesson
+                day_schedule.append(
+                    f"{lesson_num}. {subject} ({teacher}, каб. {room})"
+                )
+
+            result.append("\n".join(day_schedule))
+
+        return "\n\n".join(result)
+
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении расписания: {e}")
+        return "Не удалось загрузить расписание"
+    finally:
+        conn.close()
+
+
+def main():
+    import sys
+    from Edit_Schedule import Edit_Schedule
+
+    # Инициализация приложения Qt
+    app = QApplication(sys.argv)
+
+    # Создаем и настраиваем бота
+    application = Application.builder().token("7740433474:AAGMa_q92stKOJr5hcUFAn5E6C6Q9yR6wBw").build()
+
+    # Создаем главное окно и передаем контекст бота
+    window = Edit_Schedule(bot_context=application)
+    window.show()
+
+    # Запускаем бота в отдельном потоке
+    import threading
+    bot_thread = threading.Thread(target=application.run_polling, daemon=True)
+    bot_thread.start()
+
+    # Запускаем Qt приложение
+    sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()
