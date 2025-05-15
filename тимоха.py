@@ -13,6 +13,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import QItemSelectionModel
 
+
 class ClassSetupDialog(QDialog):
     """Диалоговое окно для выбора классов из базы данных"""
 
@@ -184,113 +185,285 @@ class TeacherRoomDialog(QDialog):
 
     def __init__(self, all_teachers, all_rooms, recommended_teachers=None, recommended_rooms=None, parent=None):
         super().__init__(parent)
-        self.selected_teacher = None
-        self.selected_room = None
+        try:
+            self.selected_teacher = None
+            self.selected_room = None
 
-        self.setWindowTitle("Выбор преподавателя и кабинета")
-        self.setFixedSize(600, 400)
+            # Безопасное получение соединения с БД
+            self.db_conn = None
+            if parent is not None:
+                grandparent = parent.parent()
+                if grandparent is not None and hasattr(grandparent, 'db_conn'):
+                    self.db_conn = grandparent.db_conn
 
-        layout = QVBoxLayout(self)
+            self.setWindowTitle("Выбор преподавателя и кабинета")
+            self.setFixedSize(600, 400)
 
-        # Основной макет с выбором учителя и кабинета
-        main_layout = QHBoxLayout()
+            # Устанавливаем темную цветовую схему
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #2D2D2D;
+                    color: #E0E0E0;
+                }
+                QLabel {
+                    color: #E0E0E0;
+                }
+                QLineEdit {
+                    background-color: #3D3D3D;
+                    color: #E0E0E0;
+                    border: 1px solid #555;
+                    padding: 5px;
+                }
+                QListWidget {
+                    background-color: #3D3D3D;
+                    color: #E0E0E0;
+                    border: 1px solid #555;
+                    show-decoration-selected: 1;
+                }
+                QListWidget::item {
+                    padding: 5px;
+                }
+                QListWidget::item:selected {
+                    background-color: #5B5048;
+                    color: white;
+                }
+                QListWidget::item:hover {
+                    background-color: #4A4A4A;
+                }
+                QPushButton {
+                    background-color: #5B5048;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                }
+                QPushButton:hover {
+                    background-color: #6D5D52;
+                }
+                QPushButton:pressed {
+                    background-color: #4A413B;
+                }
+            """)
 
-        # Панель выбора учителя
-        teacher_layout = QVBoxLayout()
-        teacher_layout.addWidget(QLabel("Выберите преподавателя:"))
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(10, 10, 10, 10)
 
-        # Список всех учителей с выделением рекомендуемых
-        self.teacher_list = QListWidget()
-        self.teacher_list.setStyleSheet("""
-            QListView {
-                show-decoration-selected: 1;
-            }
-            QListView::item:selected {
-                background-color: rgb(91,80,72);
-                color: white;
-            }
-        """)
+            # Основной макет с выбором учителя и кабинета
+            main_layout = QHBoxLayout()
+            main_layout.setSpacing(15)
 
-        for teacher in all_teachers:
-            item = QListWidgetItem(teacher)
-            if recommended_teachers and teacher in recommended_teachers:
-                item.setBackground(QColor(171, 131, 105))
-                item.setToolTip("Рекомендуемый преподаватель для этого предмета")
-            self.teacher_list.addItem(item)
+            # Панель выбора учителя
+            self.setup_teacher_panel(all_teachers, recommended_teachers, main_layout)
 
-        teacher_layout.addWidget(self.teacher_list)
+            # Панель выбора кабинета
+            self.setup_room_panel(all_rooms, recommended_rooms, main_layout)
 
-        # Поле поиска учителя
-        self.teacher_search = QLineEdit()
-        self.teacher_search.setPlaceholderText("Поиск преподавателя...")
-        self.teacher_search.textChanged.connect(self.filter_teachers)
-        teacher_layout.addWidget(self.teacher_search)
+            # Добавляем основной макет
+            layout.addLayout(main_layout)
 
-        # Панель выбора кабинета
-        room_layout = QVBoxLayout()
-        room_layout.addWidget(QLabel("Выберите кабинет:"))
+            # Кнопки OK/Отмена
+            self.setup_buttons(layout)
 
-        # Список всех кабинетов с выделением рекомендуемых
-        self.room_list = QListWidget()
-        self.room_list.setStyleSheet("""
-            QListView {
-                show-decoration-selected: 1;
-            }
-            QListView::item:selected {
-                background-color: rgb(91,80,72);
-                color: white;
-            }
-        """)
+        except Exception as e:
+            print(f"Critical error in TeacherRoomDialog init: {e}")
+            QMessageBox.critical(None, "Ошибка", "Не удалось инициализировать диалог выбора")
+            raise
 
-        for room in all_rooms:
-            item = QListWidgetItem(room)
-            if recommended_rooms and room in recommended_rooms:
-                item.setBackground(QColor(171, 131, 105))
-                item.setToolTip("Рекомендуемый кабинет для этого предмета")
-            self.room_list.addItem(item)
+    def setup_teacher_panel(self, all_teachers, recommended_teachers, main_layout):
+        """Настройка панели выбора учителя"""
+        try:
+            teacher_layout = QVBoxLayout()
+            teacher_layout.setSpacing(5)
+            teacher_layout.addWidget(QLabel("Выберите преподавателя:"))
 
-        room_layout.addWidget(self.room_list)
+            self.teacher_list = QListWidget()
 
-        # Поле поиска кабинета
-        self.room_search = QLineEdit()
-        self.room_search.setPlaceholderText("Поиск кабинета...")
-        self.room_search.textChanged.connect(self.filter_rooms)
-        room_layout.addWidget(self.room_search)
+            # Проверяем и преобразуем входные данные
+            all_teachers = self.validate_list(all_teachers)
+            recommended_teachers = self.validate_list(recommended_teachers)
 
-        # Добавляем обе панели в основной макет
-        main_layout.addLayout(teacher_layout)
-        main_layout.addLayout(room_layout)
+            # Сначала добавляем рекомендуемых учителей
+            if recommended_teachers:
+                for teacher in recommended_teachers:
+                    if teacher in all_teachers:
+                        item = QListWidgetItem(teacher)
+                        item.setBackground(QColor(171, 131, 105))
+                        item.setToolTip("Рекомендуемый преподаватель для этого предмета")
 
-        # Кнопки OK/Отмена
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(self.accept_selection)
-        button_box.rejected.connect(self.reject)
+                        room = self.get_teacher_room(teacher)
+                        if room:
+                            item.setText(f"{teacher} (каб. {room})")
 
-        # Добавляем все в основной layout
-        layout.addLayout(main_layout)
-        layout.addWidget(button_box)
+                        self.teacher_list.addItem(item)
+
+            # Затем добавляем остальных учителей
+            for teacher in all_teachers:
+                if not recommended_teachers or teacher not in recommended_teachers:
+                    item = QListWidgetItem(teacher)
+                    self.teacher_list.addItem(item)
+
+            teacher_layout.addWidget(self.teacher_list)
+
+            # Поле поиска учителя
+            self.teacher_search = QLineEdit()
+            self.teacher_search.setPlaceholderText("Поиск преподавателя...")
+            self.teacher_search.textChanged.connect(self.filter_teachers)
+            teacher_layout.addWidget(self.teacher_search)
+
+            main_layout.addLayout(teacher_layout)
+
+        except Exception as e:
+            print(f"Error setting up teacher panel: {e}")
+            raise
+
+    def setup_room_panel(self, all_rooms, recommended_rooms, main_layout):
+        """Настройка панели выбора кабинета"""
+        try:
+            room_layout = QVBoxLayout()
+            room_layout.setSpacing(5)
+            room_layout.addWidget(QLabel("Выберите кабинет:"))
+
+            self.room_list = QListWidget()
+
+            # Проверяем и преобразуем входные данные
+            all_rooms = [str(r) for r in self.validate_list(all_rooms)]
+            recommended_rooms = [str(r) for r in self.validate_list(recommended_rooms or [])]
+
+            # Сначала добавляем рекомендуемые кабинеты
+            if recommended_rooms:
+                for room in recommended_rooms:
+                    if room in all_rooms:
+                        item = QListWidgetItem(room)
+                        item.setBackground(QColor(171, 131, 105))
+                        item.setToolTip("Рекомендуемый кабинет для этого предмета")
+                        self.room_list.addItem(item)
+
+            # Затем добавляем остальные кабинеты
+            for room in all_rooms:
+                if not recommended_rooms or room not in recommended_rooms:
+                    item = QListWidgetItem(room)
+                    self.room_list.addItem(item)
+
+            room_layout.addWidget(self.room_list)
+
+            # Поле поиска кабинета
+            self.room_search = QLineEdit()
+            self.room_search.setPlaceholderText("Поиск кабинета...")
+            self.room_search.textChanged.connect(self.filter_rooms)
+            room_layout.addWidget(self.room_search)
+
+            main_layout.addLayout(room_layout)
+
+        except Exception as e:
+            print(f"Error setting up room panel: {e}")
+            raise
+
+    def setup_buttons(self, layout):
+        """Настройка кнопок диалога"""
+        try:
+            button_box = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+                parent=self
+            )
+            button_box.accepted.connect(self.safe_accept)
+            button_box.rejected.connect(self.reject)
+            layout.addWidget(button_box)
+
+            # Подключаем сигнал выбора учителя
+            self.teacher_list.itemSelectionChanged.connect(self.on_teacher_selected)
+
+        except Exception as e:
+            print(f"Error setting up buttons: {e}")
+            raise
+
+    def validate_list(self, input_list):
+        """Проверка и преобразование входного списка"""
+        if input_list is None:
+            return []
+        try:
+            return [str(item) for item in input_list if item is not None]
+        except Exception as e:
+            print(f"Error validating list: {e}")
+            return []
+
+    def get_teacher_room(self, teacher_name):
+        """Безопасное получение кабинета учителя"""
+        if not self.db_conn or not teacher_name:
+            return None
+
+        try:
+            cursor = None
+            try:
+                cursor = self.db_conn.cursor()
+                cursor.execute("""
+                    SELECT Кабинеты.Номер 
+                    FROM Учителя
+                    JOIN Кабинеты ON Учителя.Основной_кабинет_id = Кабинеты.id
+                    WHERE Учителя.ФИО = ?""", (teacher_name,))
+                result = cursor.fetchone()
+                return str(result[0]) if result else None
+            finally:
+                if cursor:
+                    cursor.close()
+        except Exception as e:
+            print(f"Error getting teacher room: {e}")
+            return None
+
+    def on_teacher_selected(self):
+        """Безопасная обработка выбора учителя"""
+        try:
+            selected_items = self.teacher_list.selectedItems()
+            if not selected_items:
+                return
+
+            teacher_item = selected_items[0]
+            if teacher_item.background().color() == QColor(171, 131, 105):
+                teacher_name = teacher_item.text().split(" (каб. ")[0]
+                room = self.get_teacher_room(teacher_name)
+                if room:
+                    for i in range(self.room_list.count()):
+                        item = self.room_list.item(i)
+                        if item and item.text() == room:
+                            self.room_list.setCurrentItem(item)
+                            break
+        except Exception as e:
+            print(f"Error in teacher selection: {e}")
 
     def filter_teachers(self, text):
-        """Фильтрация списка учителей по введенному тексту"""
-        for i in range(self.teacher_list.count()):
-            item = self.teacher_list.item(i)
-            item.setHidden(text.lower() not in item.text().lower())
+        """Безопасная фильтрация учителей"""
+        try:
+            for i in range(self.teacher_list.count()):
+                item = self.teacher_list.item(i)
+                if item:
+                    item_text = item.text().split(" (каб. ")[0]
+                    item.setHidden(text.lower() not in item_text.lower())
+        except Exception as e:
+            print(f"Error filtering teachers: {e}")
 
     def filter_rooms(self, text):
-        """Фильтрация списка кабинетов по введенному тексту"""
-        for i in range(self.room_list.count()):
-            item = self.room_list.item(i)
-            item.setHidden(text.lower() not in item.text().lower())
+        """Безопасная фильтрация кабинетов"""
+        try:
+            for i in range(self.room_list.count()):
+                item = self.room_list.item(i)
+                if item:
+                    item.setHidden(text.lower() not in item.text().lower())
+        except Exception as e:
+            print(f"Error filtering rooms: {e}")
 
-    def accept_selection(self):
-        """Обработка выбора учителя и кабинета"""
-        teacher_item = self.teacher_list.currentItem()
-        room_item = self.room_list.currentItem()
+    def safe_accept(self):
+        """Безопасное подтверждение выбора"""
+        try:
+            teacher_item = self.teacher_list.currentItem()
+            if teacher_item:
+                self.selected_teacher = teacher_item.text().split(" (каб. ")[0]
 
-        self.selected_teacher = teacher_item.text() if teacher_item else None
-        self.selected_room = room_item.text() if room_item else None
+            room_item = self.room_list.currentItem()
+            if room_item:
+                self.selected_room = room_item.text()
 
-        self.accept()
+            self.accept()
+        except Exception as e:
+            print(f"Error accepting selection: {e}")
+            self.reject()
 
     def get_selection(self):
         """Возвращает выбранные значения"""
@@ -341,18 +514,7 @@ class ScheduleApp(QMainWindow):
         # Инициализация подключения к БД
         self.db_conn = sqlite3.connect('school_schedule.db')
 
-        # Проверяем наличие классов в базе данных
-        cursor = self.db_conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM Классы")
-        has_classes = cursor.fetchone()[0] > 0
-
-        if not has_classes:
-            # Если нет классов, показываем сообщение и закрываем приложение
-            QMessageBox.critical(self, "Ошибка", "В базе данных нет классов. Добавьте классы в таблицу 'Классы'.")
-            self.close()
-            return
-
-        # Инициализация остального интерфейса
+        # Расписание звонков (по дням недели)
         self.schedule_times = {
             "ПОНЕДЕЛЬНИК": [
                 ("8:30-9:10", "1 урок"),
@@ -408,7 +570,7 @@ class ScheduleApp(QMainWindow):
                 ("13:00-13:40", "7 урок"),
                 ("13:45-14:25", "8 урок"),
                 ("15:00-15:40", "9 урок")
-            ],
+            ]
         }
 
         self.setWindowTitle("Школьное расписание")
@@ -420,8 +582,8 @@ class ScheduleApp(QMainWindow):
         self.setGeometry(100, 100, self.window_width, self.window_height)
         self.classes = []
 
-        # Показываем диалог выбора классов
-        self.show_class_setup()
+        # Инициализация интерфейса с таблицей и кнопкой "Добавить классы"
+        self.init_ui()
 
     def init_ui(self):
         """Инициализация интерфейса"""
@@ -442,21 +604,58 @@ class ScheduleApp(QMainWindow):
         self.container_layout.setSpacing(0)
         self.scroll_area.setWidget(self.container)
 
-        self.setup_days_panel()
-        self.setup_schedule_table()
+        if not self.classes:
+            # Если классы не заданы, показываем кнопку для их добавления
+            self.table = QTableWidget()
+            self.table.setMinimumWidth(self.window_width - 100)
+            self.table.setColumnCount(2)
+            self.table.setRowCount(1)
+
+            add_button = QPushButton()
+            add_button.setIcon(QIcon("knopka.png"))
+            add_button.setIconSize(QSize(32, 32))
+            add_button.setText("Добавить классы")
+            add_button.setStyleSheet("""
+                QPushButton {
+                    padding: 5px;  
+                    border: 1px solid #ccc;  
+                    border-radius: 4px;  
+                    background-color: #cea182;  
+                }
+                QPushButton:hover {
+                    background-color: #E9967A;  
+                }
+            """)
+            add_button.clicked.connect(self.show_class_setup)
+            self.table.setCellWidget(0, 1, add_button)
+
+            self.table.setHorizontalHeaderLabels(["", ""])
+            self.table.horizontalHeader().setStretchLastSection(True)
+            self.container_layout.addWidget(self.table)
+        else:
+            # Если классы заданы, создаем полную таблицу расписания
+            self.setup_days_panel()
+            self.setup_schedule_table()
 
     def show_class_setup(self):
         """Показывает диалог выбора классов"""
+        # Проверяем наличие классов в базе данных
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM Классы")
+        has_classes = cursor.fetchone()[0] > 0
+
+        if not has_classes:
+            QMessageBox.critical(self, "Ошибка", "В базе данных нет классов. Добавьте классы в таблицу 'Классы'.")
+            return
+
         dialog = ClassSetupDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.classes = dialog.get_selected_classes()
             if self.classes:
+                # Переключаемся на основной интерфейс
                 self.init_ui()
             else:
                 QMessageBox.warning(self, "Предупреждение", "Не выбрано ни одного класса.")
-                self.close()
-        else:
-            self.close()
 
     def check_teacher_conflicts(self):
         """Проверка конфликтов с цветовой подсветкой"""
@@ -532,117 +731,90 @@ class ScheduleApp(QMainWindow):
         self.table.setMouseTracking(True)
         self.table.cellEntered.connect(self.show_cell_tooltip)
 
-        if not self.classes:
-            # Если классы не заданы, показываем кнопку для их добавления
-            self.table.setColumnCount(2)
-            self.table.setRowCount(1)
+        # Создаем таблицу с колонками для каждого класса
+        self.table.setColumnCount(len(self.classes) + 1)
+        self.table.setRowCount(45)  # 5 дней * 9 уроков
 
-            add_button = QPushButton()
-            add_button.setIcon(QIcon("knopka.png"))
-            add_button.setIconSize(QSize(32, 32))
-            add_button.setText("Добавить классы")
-            add_button.setStyleSheet("""
-                QPushButton {
-                    padding: 5px;  
-                    border: 1px solid #ccc;  
-                    border-radius: 4px;  
-                    background-color: #cea182;  
-                }
-                QPushButton:hover {
-                    background-color: #E9967A;  
-                }
-            """)
-            add_button.clicked.connect(self.show_class_setup)
-            self.table.setCellWidget(0, 1, add_button)
+        headers = ["Урок"] + self.classes
+        self.table.setHorizontalHeaderLabels(headers)
 
-            self.table.setHorizontalHeaderLabels(["", ""])
-            self.table.horizontalHeader().setStretchLastSection(True)
-            self.container_layout.addWidget(self.table)
-        else:
-            # Если классы заданы, создаем полную таблицу расписания
-            self.table.setColumnCount(len(self.classes) + 1)
-            self.table.setRowCount(45)
+        self.table.verticalHeader().setDefaultSectionSize(self.row_height)
+        self.table.setColumnWidth(0, self.first_column_width)
 
-            headers = ["Урок"] + self.classes
-            self.table.setHorizontalHeaderLabels(headers)
-
-            self.table.verticalHeader().setDefaultSectionSize(self.row_height)
-            self.table.setColumnWidth(0, self.first_column_width)
-
-            # Заполняем номера уроков и временные интервалы
-            for day in range(5):
-                for lesson in range(9):
-                    row = day * 9 + lesson
-                    item = QTableWidgetItem(str(lesson + 1))
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    self.table.setItem(row, 0, item)
-
-                    day_name = ["ПОНЕДЕЛЬНИК", "ВТОРНИК", "СРЕДА", "ЧЕТВЕРГ", "ПЯТНИЦА"][day]
-                    if lesson < len(self.schedule_times[day_name]):
-                        time, desc = self.schedule_times[day_name][lesson]
-                        self.table.item(row, 0).setToolTip(f"{desc}\n{time}")
-
-            # Устанавливаем делегат для редактирования ячеек
-            delegate = ScheduleItemDelegate(self.db_conn, self)
-            for col in range(1, self.table.columnCount()):
-                self.table.setItemDelegateForColumn(col, delegate)
-
-            # Создаем закрепленную таблицу для номеров уроков
-            self.frozen_table = QTableWidget()
-            self.frozen_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            self.frozen_table.setColumnCount(1)
-            self.frozen_table.setRowCount(self.table.rowCount() + 1)
-
-            self.frozen_table.setStyleSheet("""
-                QTableWidget {
-                    border: none;  
-                    background-color: #a8856b;  
-                }
-                QTableWidget::item {
-                    border-right: 1px solid #000000;  
-                }
-            """)
-
-            header_item = QTableWidgetItem("Урок")
-            header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            header_item.setFlags(header_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.frozen_table.setItem(0, 0, header_item)
-
-            header_fixed_height = 25
-            self.frozen_table.setRowHeight(0, header_fixed_height)
-
-            # Копируем номера уроков из основной таблицы
-            for row in range(1, self.table.rowCount() + 1):
-                item = self.table.item(row - 1, 0).clone()
+        # Заполняем номера уроков и временные интервалы
+        for day in range(5):
+            for lesson in range(9):
+                row = day * 9 + lesson
+                item = QTableWidgetItem(str(lesson + 1))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.frozen_table.setItem(row, 0, item)
-                self.frozen_table.setRowHeight(row, 31)
+                self.table.setItem(row, 0, item)
 
-            self.frozen_table.setColumnWidth(0, self.first_column_width)
-            self.frozen_table.setFixedWidth(self.first_column_width)
-            self.frozen_table.verticalHeader().hide()
-            self.frozen_table.horizontalHeader().hide()
+                day_name = ["ПОНЕДЕЛЬНИК", "ВТОРНИК", "СРЕДА", "ЧЕТВЕРГ", "ПЯТНИЦА"][day]
+                if lesson < len(self.schedule_times[day_name]):
+                    time, desc = self.schedule_times[day_name][lesson]
+                    self.table.item(row, 0).setToolTip(f"{desc}\n{time}")
 
-            # Создаем контейнер для двух таблиц
-            table_container = QWidget()
-            container_layout = QHBoxLayout()
-            container_layout.addWidget(self.frozen_table)
-            container_layout.addWidget(self.table)
-            container_layout.setSpacing(0)
-            container_layout.setContentsMargins(5, 0, 0, 0)
-            table_container.setLayout(container_layout)
+        # Устанавливаем делегат для редактирования ячеек
+        delegate = ScheduleItemDelegate(self.db_conn, self)
+        for col in range(1, self.table.columnCount()):
+            self.table.setItemDelegateForColumn(col, delegate)
 
-            # Синхронизируем скроллинг двух таблиц
-            self.table.verticalScrollBar().valueChanged.connect(
-                self.frozen_table.verticalScrollBar().setValue
-            )
-            self.frozen_table.verticalScrollBar().valueChanged.connect(
-                self.table.verticalScrollBar().setValue
-            )
+        # Создаем закрепленную таблицу для номеров уроков
+        self.frozen_table = QTableWidget()
+        self.frozen_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.frozen_table.setColumnCount(1)
+        self.frozen_table.setRowCount(self.table.rowCount() + 1)
 
-            self.container_layout.addWidget(table_container)
-            self.table.setColumnHidden(0, True)
+        self.frozen_table.setStyleSheet("""
+            QTableWidget {
+                border: none;
+                background-color: #a8856b;
+            }
+            QTableWidget::item {
+                border-right: 1px solid #000000;
+            }
+        """)
+
+        header_item = QTableWidgetItem("Урок")
+        header_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_item.setFlags(header_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.frozen_table.setItem(0, 0, header_item)
+
+        header_fixed_height = 25
+        self.frozen_table.setRowHeight(0, header_fixed_height)
+
+        # Копируем номера уроков из основной таблицы
+        for row in range(1, self.table.rowCount() + 1):
+            item = self.table.item(row - 1, 0).clone()
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.frozen_table.setItem(row, 0, item)
+            self.frozen_table.setRowHeight(row, 31)
+
+        self.frozen_table.setColumnWidth(0, self.first_column_width)
+        self.frozen_table.setFixedWidth(self.first_column_width)
+        self.frozen_table.verticalHeader().hide()
+        self.frozen_table.horizontalHeader().hide()
+
+        # Создаем контейнер для двух таблиц
+        table_container = QWidget()
+        container_layout = QHBoxLayout()
+        container_layout.addWidget(self.frozen_table)
+        container_layout.addWidget(self.table)
+        container_layout.setSpacing(0)
+        container_layout.setContentsMargins(5, 0, 0, 0)
+        table_container.setLayout(container_layout)
+
+        # Синхронизируем скроллинг двух таблиц
+        self.table.verticalScrollBar().valueChanged.connect(
+            self.frozen_table.verticalScrollBar().setValue
+        )
+        self.frozen_table.verticalScrollBar().valueChanged.connect(
+            self.table.verticalScrollBar().setValue
+        )
+
+        self.container_layout.addWidget(table_container)
+        self.table.setColumnHidden(0, True)
 
         self.table.verticalHeader().setVisible(False)
 
