@@ -86,12 +86,12 @@ class AddTableWindow(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
-                color: #FF69B4;
+                color: #E9967A;
             }
             QLineEdit, QComboBox {
                 background-color: #252525;
                 color: #E0E0E0;
-                border: 1px solid #FF69B4;
+                border: 1px solid #E9967A;
                 padding: 5px;
                 min-height: 25px;
             }
@@ -102,7 +102,7 @@ class AddTableWindow(QDialog):
                 border: none;
             }
             QFrame#separator {
-                border: 1px solid #FF69B4;
+                border: 1px solid #E9967A;
                 margin-top: 10px;
                 margin-bottom: 10px;
             }
@@ -114,7 +114,7 @@ class AddTableWindow(QDialog):
     def get_existing_tables(self):
         """Получает список существующих таблиц из базы данных"""
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [table[0] for table in cursor.fetchall()]
@@ -126,7 +126,7 @@ class AddTableWindow(QDialog):
     def get_table_columns(self, table_name):
         """Получает список столбцов для указанной таблицы"""
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute(f"PRAGMA table_info({table_name})")
             columns = [column[1] for column in cursor.fetchall()]
@@ -287,7 +287,7 @@ class AddTableWindow(QDialog):
                 parent_cols.append(rel['foreign_column'])
 
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute("PRAGMA foreign_keys = ON")
 

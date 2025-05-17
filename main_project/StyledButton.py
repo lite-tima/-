@@ -8,8 +8,8 @@ class StyledButton(QPushButton):
         self.setStyleSheet("""
             QPushButton {
                 background-color: #1E1E1E;
-                color: #FF69B4;
-                border: 2px solid #FF69B4;
+                color: #E9967A;
+                border: 2px solid #E9967A;
                 margin: 5px;
                 min-width: 100px;
                 min-height: 30px;

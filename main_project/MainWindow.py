@@ -25,11 +25,11 @@ class MainWindow(QWidget):
         self.setStyleSheet("""
             QWidget {
                 background-color: #1E1E1E;
-                color: #FF69B4;
+                color: #E9967A;
                 font-size: 14px;
             }
             QDialog {
-                border: 1px solid #FF69B4;
+                border: 1px solid #E9967A;
             }
         """)
 
@@ -119,7 +119,7 @@ class MainWindow(QWidget):
         confirm_box.setStyleSheet("""
             QMessageBox {
                 background-color: #1E1E1E;
-                color: #FF69B4;
+                color: #E9967A;
             }
             QLabel {
                 font-size: 14px;
@@ -128,8 +128,8 @@ class MainWindow(QWidget):
                 min-width: 80px;
                 min-height: 25px;
                 background-color: #252525;
-                color: #FF69B4;
-                border: 1px solid #FF69B4;
+                color: #E9967A;
+                border: 1px solid #E9967A;
             }
         """)
 
@@ -214,7 +214,7 @@ class MainWindow(QWidget):
 
         # Проверяем, есть ли таблицы в базе данных
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             tables = cursor.fetchall()

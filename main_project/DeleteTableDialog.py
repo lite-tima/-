@@ -19,7 +19,7 @@ class DeleteTableDialog(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
-                color: #FF69B4;
+                color: #E9967A;
             }
             QLabel {
                 font-size: 14px;
@@ -27,7 +27,7 @@ class DeleteTableDialog(QDialog):
             QComboBox {
                 background-color: #252525;
                 color: #E0E0E0;
-                border: 1px solid #FF69B4;
+                border: 1px solid #E9967A;
                 padding: 5px;
                 min-height: 25px;
                 min-width: 200px;  # <-- Добавлено для увеличения комбобокса
@@ -85,7 +85,7 @@ class DeleteTableDialog(QDialog):
     def get_existing_tables(self):
         """Получает список существующих таблиц"""
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [table[0] for table in cursor.fetchall() if table[0] != "sqlite_sequence"]
@@ -128,7 +128,7 @@ class DeleteTableDialog(QDialog):
         """)
 
         if confirm_box.exec() == QMessageBox.StandardButton.Yes:
-            bd_file = 'schedule.db'
+            bd_file = 'school_schedule.db'
             conn = sqlite3.connect(bd_file)
             cursor = conn.cursor()
             cursor.execute(f'DROP TABLE {table_name}')

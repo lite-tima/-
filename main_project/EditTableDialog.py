@@ -23,7 +23,7 @@ class EditTableDialog(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #1E1E1E;
-                color: #FF69B4;
+                color: #E9967A;
             }
             QLabel {
                 font-size: 14px;
@@ -31,7 +31,7 @@ class EditTableDialog(QDialog):
             QComboBox, QLineEdit {
                 background-color: #252525;
                 color: #E0E0E0;
-                border: 1px solid #FF69B4;
+                border: 1px solid #E9967A;
                 padding: 5px;
                 min-height: 25px;
             }
@@ -60,7 +60,7 @@ class EditTableDialog(QDialog):
         # Разделитель
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("border: 1px solid #FF69B4;")
+        separator.setStyleSheet("border: 1px solid #E9967A;")
         main_layout.addWidget(separator)
 
         # Область редактирования структуры
@@ -161,7 +161,7 @@ class EditTableDialog(QDialog):
 
         try:
             # Получаем структуру таблицы из БД
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute(f"PRAGMA table_info({table_name})")
             db_columns = cursor.fetchall()
@@ -328,7 +328,7 @@ class EditTableDialog(QDialog):
     def get_existing_tables(self):
         """Получает список существующих таблиц"""
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [table[0] for table in cursor.fetchall() if table[0] != "sqlite_sequence"]
@@ -368,7 +368,7 @@ class EditTableDialog(QDialog):
     def get_table_columns(self, table_name):
         """Получает список столбцов для указанной таблицы"""
         try:
-            conn = sqlite3.connect('schedule.db')
+            conn = sqlite3.connect('school_schedule.db')
             cursor = conn.cursor()
             cursor.execute(f"PRAGMA table_info({table_name})")
             columns = [column[1] for column in cursor.fetchall()]
@@ -462,7 +462,7 @@ class EditTableDialog(QDialog):
         :return: None
         """
         # Подключаемся к базе данных
-        conn = sqlite3.connect('schedule.db')
+        conn = sqlite3.connect('school_schedule.db')
         cursor = conn.cursor()
 
         # Удаляем таблицу, если она существует

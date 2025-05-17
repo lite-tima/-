@@ -4,21 +4,26 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget, QLabel, QHBoxLayout, QScrollArea, QPushButton, QDialog,
     QComboBox, QLineEdit, QFormLayout, QGridLayout, QStyledItemDelegate,
-    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox, QListWidget, QListWidgetItem, QMessageBox
+    QCompleter, QAbstractItemView, QMenu, QListView, QDialogButtonBox,
+    QListWidget, QListWidgetItem, QMessageBox
 )
 from PyQt6.QtCore import Qt, QSize, QSortFilterProxyModel, QStringListModel, QRectF
 from PyQt6.QtGui import (
     QColor, QPainter, QPainterPath, QFont, QFontMetrics, QIcon, QPixmap,
     QStandardItemModel, QStandardItem, QPen
 )
+from PyQt6.QtCore import QItemSelectionModel
+import requests
+import json
 
 
 class ClassSetupDialog(QDialog):
-    """Диалоговое окно для настройки списка классов"""
+    """Диалоговое окно для выбора классов из базы данных"""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Настройка классов")
-        self.setFixedSize(400, 300)
+        self.setWindowTitle("Выбор классов")
+        self.setFixedSize(300, 400)
 
         layout = QVBoxLayout(self)
 
@@ -32,75 +37,31 @@ class ClassSetupDialog(QDialog):
         self.model = QStringListModel()
         self.model.setStringList(existing_classes)
 
-        # Виджет для отображения и редактирования списка классов
+        # Виджет для отображения списка классов
         self.list_view = QListView()
         self.list_view.setModel(self.model)
-        self.list_view.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
+        self.list_view.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
 
-        # Кнопки для управления списком
-        button_layout = QHBoxLayout()
-        add_button = QPushButton("Добавить")
-        add_button.clicked.connect(self.add_class)
-        remove_button = QPushButton("Удалить")
-        remove_button.clicked.connect(self.remove_class)
-        button_layout.addWidget(add_button)
-        button_layout.addWidget(remove_button)
+        # Выделяем все классы по умолчанию
+        for i in range(self.model.rowCount()):
+            self.list_view.selectionModel().select(
+                self.model.index(i),
+                QItemSelectionModel.SelectionFlag.Select
+            )
 
         # Кнопки OK/Отмена
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(self.save_classes)
+        button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
-        layout.addWidget(QLabel("Список классов:"))
+        layout.addWidget(QLabel("Выберите классы для отображения:"))
         layout.addWidget(self.list_view)
-        layout.addLayout(button_layout)
         layout.addWidget(button_box)
 
-    def add_class(self):
-        """Добавляет новый класс в список"""
-        row = self.model.rowCount()
-        self.model.insertRow(row)
-        index = self.model.index(row)
-        self.list_view.setCurrentIndex(index)
-        self.list_view.edit(index)
-
-    def remove_class(self):
-        """Удаляет выбранный класс из списка"""
-        index = self.list_view.currentIndex()
-        if index.isValid():
-            self.model.removeRow(index.row())
-
-    def save_classes(self):
-        """Сохраняет изменения классов в базу данных"""
-        try:
-            cursor = self.db_conn.cursor()
-
-            # Получаем текущий список классов из БД
-            cursor.execute("SELECT Название FROM Классы")
-            db_classes = {row[0] for row in cursor.fetchall()}
-
-            # Получаем новые классы из модели
-            new_classes = set(self.model.stringList())
-
-            # Классы для добавления
-            to_add = new_classes - db_classes
-            for class_name in to_add:
-                cursor.execute("INSERT INTO Классы (Название) VALUES (?)", (class_name,))
-
-            # Классы для удаления
-            to_remove = db_classes - new_classes
-            for class_name in to_remove:
-                cursor.execute("DELETE FROM Классы WHERE Название = ?", (class_name,))
-
-            self.db_conn.commit()
-            self.accept()
-        except Exception as e:
-            print(f"Ошибка при сохранении классов: {e}")
-            self.db_conn.rollback()
-
-    def get_classes(self):
-        """Возвращает список классов"""
-        return self.model.stringList()
+    def get_selected_classes(self):
+        """Возвращает список выбранных классов"""
+        indexes = self.list_view.selectedIndexes()
+        return [self.model.data(index, Qt.ItemDataRole.DisplayRole) for index in indexes]
 
     def closeEvent(self, event):
         """Закрывает соединение с БД при закрытии диалога"""
@@ -122,12 +83,12 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         editor.setEditable(True)
         editor.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
 
-        # Добавляем пустой элемент для возможности очистки ячейки
-        editor.addItem("")
-
         cursor = self.db_conn.cursor()
         cursor.execute("SELECT Название, Сокращение FROM Предметы")
         subjects = [f"{short} ({full})" for full, short in cursor.fetchall()]
+
+        editor.addItem("")  # Пустая строка для удаления предмета
+        editor.addItems(subjects)
 
         completer = QCompleter(subjects, editor)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -153,67 +114,33 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         painter.restore()
 
     def setModelData(self, editor, model, index):
-        """Сохраняет данные из редактора в модель"""
         text = editor.currentText()
-
-        # Если ячейка очищена - удаляем запись
+        # Если выбрана пустая строка - удаляем данные
         if not text:
-            row = index.row()
-            col = index.column()
-            day_number = row // 9 + 1
-            lesson_number = (row % 9) + 1
+            model.setData(index, "", Qt.ItemDataRole.DisplayRole)
+            model.setData(index, None, Qt.ItemDataRole.UserRole)
+            model.setData(index, QColor(42, 181, 194), Qt.ItemDataRole.BackgroundRole)  # Бирюзовый фон
+            model.setData(index, QColor(0, 0, 0), Qt.ItemDataRole.ForegroundRole)
 
-            class_name = self.parent().table.horizontalHeaderItem(col).text()
-            cursor = self.db_conn.cursor()
-            cursor.execute("SELECT id FROM Классы WHERE Название = ?", (class_name,))
-            class_id_result = cursor.fetchone()
-            if not class_id_result:
-                return
-            class_id = class_id_result[0]
-
-            cursor.execute("""
-                SELECT id FROM Временные_слоты
-                WHERE Номер_слота = ? AND Тип_дня = (
-                    SELECT CASE WHEN Сокращенный_день THEN 'Сокращенный' ELSE 'Обычный' END
-                    FROM Настройки_дней WHERE Порядковый_номер = ?
-                )""", (lesson_number, day_number))
-            time_slot_result = cursor.fetchone()
-            if not time_slot_result:
-                return
-            time_slot_id = time_slot_result[0]
-
-            try:
-                cursor.execute("""
-                    DELETE FROM Расписание
-                    WHERE День_недели = ? AND ID_временного_слота = ? AND ID_класса = ?
-                """, (day_number, time_slot_id, class_id))
-                self.db_conn.commit()
-                model.setData(index, "", Qt.ItemDataRole.DisplayRole)
-                model.setData(index, None, Qt.ItemDataRole.BackgroundRole)
-                model.setData(index, None, Qt.ItemDataRole.ForegroundRole)
-                model.setData(index, None, Qt.ItemDataRole.UserRole)
-                self.parent().check_teacher_conflicts()  # <-- Проверка конфликтов
-            except sqlite3.Error as e:
-                QMessageBox.critical(self.parent(), "Ошибка базы данных", f"Не удалось удалить данные: {str(e)}")
-                self.db_conn.rollback()
+            # Удаляем запись из базы данных
+            self.delete_schedule_record(index)
             return
 
-        # Извлекаем сокращенное название предмета
         short_name = text.split(" ")[0]
+
         cursor = self.db_conn.cursor()
         cursor.execute("SELECT id, Название FROM Предметы WHERE Сокращение = ?", (short_name,))
         result = cursor.fetchone()
+
         if not result:
             return
-        subject_id, full_name = result
 
-        # Получаем список всех учителей и кабинетов для диалога
+        subject_id, full_name = result  # ID и полное название предмета
+
+        # Получаем данные для диалога
         cursor.execute("SELECT id, ФИО FROM Учителя")
         all_teachers = [(row[0], row[1]) for row in cursor.fetchall()]
-        cursor.execute("SELECT id, Номер FROM Кабинеты")
-        all_rooms = [(row[0], str(row[1])) for row in cursor.fetchall()]
 
-        # Получаем рекомендуемых учителей по предмету
         cursor.execute("""
             SELECT Учителя.id, Учителя.ФИО FROM Учителя
             JOIN Учителя_Предметы ON Учителя.id = Учителя_Предметы.ID_учителя
@@ -221,7 +148,9 @@ class ScheduleItemDelegate(QStyledItemDelegate):
             WHERE Предметы.Сокращение = ?""", (short_name,))
         subject_teachers = [(row[0], row[1]) for row in cursor.fetchall()]
 
-        # Получаем рекомендуемые кабинеты по предмету и учителям
+        cursor.execute("SELECT id, Номер FROM Кабинеты")
+        all_rooms = [(row[0], str(row[1])) for row in cursor.fetchall()]
+
         cursor.execute("""
             SELECT DISTINCT Кабинеты.id, Кабинеты.Номер FROM Кабинеты
             JOIN Предметы ON Кабинеты.id = Предметы.Основной_кабинет_id
@@ -234,7 +163,6 @@ class ScheduleItemDelegate(QStyledItemDelegate):
             WHERE Предметы.Сокращение = ?""", (short_name, short_name))
         subject_rooms = [(row[0], str(row[1])) for row in cursor.fetchall()]
 
-        # Открываем диалог выбора учителя и кабинета
         dialog = TeacherRoomDialog(
             all_teachers=[t[1] for t in all_teachers],
             all_rooms=[r[1] for r in all_rooms],
@@ -245,17 +173,23 @@ class ScheduleItemDelegate(QStyledItemDelegate):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             teacher_name, room_number = dialog.get_selection()
+
+            # Находим ID выбранного учителя и кабинета
             teacher_id = next((t[0] for t in all_teachers if t[1] == teacher_name), None)
             room_id = next((r[0] for r in all_rooms if r[1] == room_number), None)
 
             if not teacher_id or not room_id:
                 return
 
+            # Получаем информацию о текущей ячейке
             row = index.row()
             col = index.column()
-            day_number = row // 9 + 1
-            lesson_number = (row % 9) + 1
 
+            # Определяем день недели и номер урока
+            day_number = row // 9 + 1  # Порядковый номер дня (1-5)
+            lesson_number = (row % 9) + 1  # Номер урока (1-9)
+
+            # Получаем ID класса из заголовка столбца
             class_name = self.parent().table.horizontalHeaderItem(col).text()
             cursor.execute("SELECT id FROM Классы WHERE Название = ?", (class_name,))
             class_id_result = cursor.fetchone()
@@ -263,8 +197,9 @@ class ScheduleItemDelegate(QStyledItemDelegate):
                 return
             class_id = class_id_result[0]
 
+            # Получаем ID временного слота
             cursor.execute("""
-                SELECT id FROM Временные_слоты
+                SELECT id FROM Временные_слоты 
                 WHERE Номер_слота = ? AND Тип_дня = (
                     SELECT CASE WHEN Сокращенный_день THEN 'Сокращенный' ELSE 'Обычный' END
                     FROM Настройки_дней WHERE Порядковый_номер = ?
@@ -275,36 +210,38 @@ class ScheduleItemDelegate(QStyledItemDelegate):
             time_slot_id = time_slot_result[0]
 
             try:
-                # Проверяем, есть ли уже запись
+                # Сохраняем или обновляем запись в базе данных
                 cursor.execute("""
-                    SELECT id FROM Расписание
+                    SELECT id FROM Расписание 
                     WHERE День_недели = ? AND ID_временного_слота = ? AND ID_класса = ?
                 """, (day_number, time_slot_id, class_id))
                 existing_record = cursor.fetchone()
 
-                if existing_record:
-                    # Обновляем существующую запись
-                    cursor.execute("""
-                        UPDATE Расписание
-                        SET ID_предмета = ?, ID_учителя = ?, ID_кабинета = ?
-                        WHERE id = ?
-                    """, (subject_id, teacher_id, room_id, existing_record[0]))
-                else:
-                    # Создаем новую запись
-                    cursor.execute("""
-                        INSERT INTO Расписание (
-                            ID_класса, ID_предмета, ID_учителя, ID_кабинета,
-                            ID_временного_слота, День_недели, Группа
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1)
-                    """, (class_id, subject_id, teacher_id, room_id, time_slot_id, day_number))
+                # Отправляем уведомление только пользователям этого класса
+                try:
+                    day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"]
+                    day_name = day_names[day_number - 1]
 
-                self.db_conn.commit()
+                    notification_data = {
+                        "message": f"📝 Изменение в расписании вашего класса:\n"
+                                   f"📅 День: {day_name}\n"
+                                   f"⏰ Урок: {lesson_number}\n"
+                                   f"📚 Предмет: {full_name}\n"
+                                   f"👨‍🏫 Преподаватель: {teacher_name}\n"
+                                   f"🚪 Кабинет: {room_number}\n\n\n"
+                                   f"🏎 Кратко: {day_name}, {lesson_number} урок: {full_name} {room_number} ({teacher_name})",
+                        "class_name": class_name
+                    }
 
-                display_text = f"{full_name} ({room_number})" if room_number else full_name
-                model.setData(index, display_text, Qt.ItemDataRole.DisplayRole)
-                model.setData(index, QColor(127, 111, 102), Qt.ItemDataRole.BackgroundRole)
-                model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
+                    requests.post(
+                        "http://localhost:8000/notify",
+                        json=notification_data,
+                        timeout=5
+                    )
+                except Exception as e:
+                    print(f"Ошибка отправки уведомления: {str(e)}")
 
+                # Сохраняем все данные в UserRole
                 full_data = {
                     'subject': full_name,
                     'subject_id': subject_id,
@@ -318,37 +255,64 @@ class ScheduleItemDelegate(QStyledItemDelegate):
                 }
                 model.setData(index, full_data, Qt.ItemDataRole.UserRole)
 
-                # Проверяем конфликты учителей и кабинетов
-                self.parent().check_teacher_conflicts()  # <-- Эта строка вызывает проверку
+                # Отображаем только "Предмет (Кабинет)"
+                display_text = f"{full_name} ({room_number})" if room_number else full_name
+                model.setData(index, display_text, Qt.ItemDataRole.DisplayRole)
 
+                # Устанавливаем цвета
+                model.setData(index, QColor(42, 181, 194), Qt.ItemDataRole.BackgroundRole)
+                model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
+
+                # Проверяем конфликты
+                self.parent().check_teacher_conflicts()
             except sqlite3.Error as e:
                 QMessageBox.critical(self.parent(), "Ошибка базы данных", f"Не удалось сохранить данные: {str(e)}")
                 self.db_conn.rollback()
 
-    def accept_selection(self):
-        """Обработка выбора учителя и кабинета"""
-        teacher_item = self.teacher_list.currentItem()
-        room_item = self.room_list.currentItem()
+    def delete_schedule_record(self, index):
+        """Удаляет запись расписания из базы данных"""
+        try:
+            cursor = self.db_conn.cursor()
 
-        if teacher_item:
-            self.selected_teacher = teacher_item.text().split(" (каб. ")[0]
-        else:
-            self.selected_teacher = None
+            # Получаем информацию о текущей ячейке
+            row = index.row()
+            col = index.column()
 
-        if room_item:
-            self.selected_room = room_item.text()
-        else:
-            self.selected_room = None
+            # Определяем день недели и номер урока
+            day_number = row // 9 + 1  # Порядковый номер дня (1-5)
+            lesson_number = (row % 9) + 1  # Номер урока (1-9)
 
-        # Вызываем проверку конфликтов в родительском окне
-        parent = self.parent()
-        while parent and not isinstance(parent, ScheduleApp):
-            parent = parent.parent()
+            # Получаем ID класса из заголовка столбца
+            class_name = self.parent().table.horizontalHeaderItem(col).text()
+            cursor.execute("SELECT id FROM Классы WHERE Название = ?", (class_name,))
+            class_id_result = cursor.fetchone()
+            if not class_id_result:
+                return
+            class_id = class_id_result[0]
 
-        if isinstance(parent, ScheduleApp):
-            parent.check_teacher_conflicts()
+            # Получаем ID временного слота
+            cursor.execute("""
+                SELECT id FROM Временные_слоты 
+                WHERE Номер_слота = ? AND Тип_дня = (
+                    SELECT CASE WHEN Сокращенный_день THEN 'Сокращенный' ELSE 'Обычный' END
+                    FROM Настройки_дней WHERE Порядковый_номер = ?
+                )""", (lesson_number, day_number))
+            time_slot_result = cursor.fetchone()
+            if not time_slot_result:
+                return
+            time_slot_id = time_slot_result[0]
 
-        self.accept()
+            # Удаляем запись из базы данных
+            cursor.execute("""
+                DELETE FROM Расписание 
+                WHERE День_недели = ? AND ID_временного_слота = ? AND ID_класса = ?
+            """, (day_number, time_slot_id, class_id))
+
+            self.db_conn.commit()
+
+        except sqlite3.Error as e:
+            QMessageBox.critical(self.parent(), "Ошибка базы данных", f"Не удалось удалить данные: {str(e)}")
+            self.db_conn.rollback()
 
 class TeacherRoomDialog(QDialog):
     """Диалог выбора учителя и кабинета для предмета"""
@@ -791,7 +755,6 @@ class ScheduleApp(QMainWindow):
             self.setup_days_panel()
             self.setup_schedule_table()
             self.load_schedule_from_db()
-            self.check_teacher_conflicts()
 
     def show_class_setup(self):
         """Показывает диалог выбора классов"""
@@ -806,8 +769,12 @@ class ScheduleApp(QMainWindow):
 
         dialog = ClassSetupDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.classes = dialog.get_classes()
-            self.init_ui()
+            self.classes = dialog.get_selected_classes()
+            if self.classes:
+                # Переключаемся на основной интерфейс
+                self.init_ui()
+            else:
+                QMessageBox.warning(self, "Предупреждение", "Не выбрано ни одного класса.")
 
     def check_teacher_conflicts(self):
         """Проверка конфликтов с цветовой подсветкой"""
@@ -816,7 +783,7 @@ class ScheduleApp(QMainWindow):
             for col in range(1, self.table.columnCount()):
                 item = self.table.item(row, col)
                 if item:
-                    #item.setBackground(QColor(42, 181, 192))  # Стандартный цвет
+                    item.setBackground(QColor(42,181,192))  # Стандартный цвет
                     item.setData(Qt.ItemDataRole.UserRole + 1, None)
 
         # Словари для сбора данных
@@ -976,55 +943,6 @@ class ScheduleApp(QMainWindow):
 
         self.table.verticalHeader().setDefaultSectionSize(self.row_height)
 
-    def check_teacher_conflicts(self):
-        """Проверка конфликтов с цветовой подсветкой"""
-        # Сбрасываем все выделения
-        for row in range(self.table.rowCount()):
-            for col in range(1, self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item:
-                    #item.setBackground(QColor(127, 111, 102))  # Стандартный цвет
-                    item.setData(Qt.ItemDataRole.UserRole + 1, None)
-
-        # Словари для сбора данных
-        teacher_dict = {}  # {строка: {учитель: [ячейки]}}
-        room_dict = {}  # {строка: {кабинет: [ячейки]}}
-
-        # Собираем данные
-        for row in range(self.table.rowCount()):
-            for col in range(1, self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item and item.text():
-                    full_data = item.data(Qt.ItemDataRole.UserRole)
-
-                    if isinstance(full_data, dict):
-                        teacher = full_data.get('teacher')
-                        room = full_data.get('room')
-
-                        # Заполняем словари
-                        if teacher:
-                            teacher_dict.setdefault(row, {}).setdefault(teacher, []).append(item)
-                        if room:
-                            room_dict.setdefault(row, {}).setdefault(room, []).append(item)
-
-        # Проверяем конфликты кабинетов (красный)
-        for row in room_dict:
-            for room in room_dict[row]:
-                if len(room_dict[row][room]) > 1:
-                    for item in room_dict[row][room]:
-                        item.setBackground(QColor(255, 0, 0))  # Красный
-                        item.setData(Qt.ItemDataRole.UserRole + 1, "room_conflict")
-
-        # Проверяем конфликты учителей (розовый)
-        for row in teacher_dict:
-            for teacher in teacher_dict[row]:
-                if len(teacher_dict[row][teacher]) > 1:
-                    for item in teacher_dict[row][teacher]:
-                        # Подсвечиваем только если нет конфликта кабинета
-                        if item.data(Qt.ItemDataRole.UserRole + 1) != "room_conflict":
-                            item.setBackground(QColor(205, 132, 157))  # Розовый
-                            item.setData(Qt.ItemDataRole.UserRole + 1, "teacher_conflict")
-        self.table.viewport().update()
     def load_schedule_from_db(self):
         """Загружает расписание из базы данных в таблицу"""
         try:
@@ -1126,6 +1044,22 @@ class ScheduleApp(QMainWindow):
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+
+    # Проверяем наличие базы данных и создаем при необходимости
+    try:
+        conn = sqlite3.connect('school_schedule.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='Классы'")
+        if not cursor.fetchone():
+            # Если таблицы не существует, создаем базу данных
+            import create_database  # Импортируем модуль для создания БД
+
+            create_database.create_and_fill_database()
+        conn.close()
+    except Exception as e:
+        QMessageBox.critical(None, "Ошибка базы данных", f"Не удалось проверить/создать базу данных: {str(e)}")
+        sys.exit(1)
+
     window = ScheduleApp()
     window.show()
     sys.exit(app.exec())

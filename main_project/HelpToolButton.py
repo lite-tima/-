@@ -9,8 +9,8 @@ class HelpToolButton(QToolButton):
         self.setStyleSheet("""
             QToolButton {
                 background-color: #1E1E1E;
-                color: #FF69B4;
-                border: 1px solid #FF69B4;
+                color: #E9967A;
+                border: 1px solid #E9967A;
                 border-radius: 10px;
                 min-width: 20px;
                 max-width: 20px;
