@@ -1,3 +1,4 @@
+#   "ИЗМЕНИТЬ РАСПИСАНИЕ"
 import sys
 import sqlite3
 from PyQt6.QtWidgets import (
@@ -95,23 +96,8 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         editor.setCompleter(completer)
 
-        editor.addItems(subjects)
         self.current_editor = editor
         return editor
-
-    def paint(self, painter, option, index):
-        """Упрощенная отрисовка без границ, только заливка"""
-        # Получаем данные о конфликте
-        conflict_type = index.data(Qt.ItemDataRole.UserRole + 1)
-
-        # Сохраняем оригинальные настройки
-        painter.save()
-
-        # Рисуем стандартное содержимое ячейки
-        super().paint(painter, option, index)
-
-        # Восстанавливаем настройки
-        painter.restore()
 
     def setModelData(self, editor, model, index):
         text = editor.currentText()
@@ -119,11 +105,11 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         if not text:
             model.setData(index, "", Qt.ItemDataRole.DisplayRole)
             model.setData(index, None, Qt.ItemDataRole.UserRole)
-            model.setData(index, QColor(42, 181, 194), Qt.ItemDataRole.BackgroundRole)  # Бирюзовый фон
-            model.setData(index, QColor(0, 0, 0), Qt.ItemDataRole.ForegroundRole)
-
-            # Удаляем запись из базы данных
+            model.setData(index, QColor(171, 131, 105), Qt.ItemDataRole.BackgroundRole)
+            model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
             self.delete_schedule_record(index)
+            self.parent().update_cell_colors(index.row())
+            self.parent().check_teacher_conflicts()
             return
 
         short_name = text.split(" ")[0]
@@ -135,7 +121,7 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         if not result:
             return
 
-        subject_id, full_name = result  # ID и полное название предмета
+        subject_id, full_name = result
 
         # Получаем данные для диалога
         cursor.execute("SELECT id, ФИО FROM Учителя")
@@ -173,23 +159,17 @@ class ScheduleItemDelegate(QStyledItemDelegate):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             teacher_name, room_number = dialog.get_selection()
-
-            # Находим ID выбранного учителя и кабинета
             teacher_id = next((t[0] for t in all_teachers if t[1] == teacher_name), None)
             room_id = next((r[0] for r in all_rooms if r[1] == room_number), None)
 
             if not teacher_id or not room_id:
                 return
 
-            # Получаем информацию о текущей ячейке
             row = index.row()
             col = index.column()
+            day_number = row // 9 + 1
+            lesson_number = (row % 9) + 1
 
-            # Определяем день недели и номер урока
-            day_number = row // 9 + 1  # Порядковый номер дня (1-5)
-            lesson_number = (row % 9) + 1  # Номер урока (1-9)
-
-            # Получаем ID класса из заголовка столбца
             class_name = self.parent().table.horizontalHeaderItem(col).text()
             cursor.execute("SELECT id FROM Классы WHERE Название = ?", (class_name,))
             class_id_result = cursor.fetchone()
@@ -197,7 +177,6 @@ class ScheduleItemDelegate(QStyledItemDelegate):
                 return
             class_id = class_id_result[0]
 
-            # Получаем ID временного слота
             cursor.execute("""
                 SELECT id FROM Временные_слоты 
                 WHERE Номер_слота = ? AND Тип_дня = (
@@ -210,38 +189,59 @@ class ScheduleItemDelegate(QStyledItemDelegate):
             time_slot_id = time_slot_result[0]
 
             try:
-                # Сохраняем или обновляем запись в базе данных
+                # Проверяем, есть ли такой же урок в базе данных
                 cursor.execute("""
-                    SELECT id FROM Расписание 
-                    WHERE День_недели = ? AND ID_временного_слота = ? AND ID_класса = ?
-                """, (day_number, time_slot_id, class_id))
-                existing_record = cursor.fetchone()
+                    SELECT 
+                        p.Название, u.ФИО, k.Номер 
+                    FROM Расписание r
+                    JOIN Предметы p ON r.ID_предмета = p.id
+                    JOIN Учителя u ON r.ID_учителя = u.id
+                    JOIN Кабинеты k ON r.ID_кабинета = k.id
+                    WHERE r.День_недели = ? 
+                    AND r.ID_временного_слота = ? 
+                    AND r.ID_класса = ?""",
+                               (day_number, time_slot_id, class_id))
+                db_record = cursor.fetchone()
 
-                # Отправляем уведомление только пользователям этого класса
+                # Отправка уведомления в Telegram
                 try:
                     day_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"]
                     day_name = day_names[day_number - 1]
 
-                    notification_data = {
-                        "message": f"📝 Изменение в расписании вашего класса:\n"
-                                   f"📅 День: {day_name}\n"
-                                   f"⏰ Урок: {lesson_number}\n"
-                                   f"📚 Предмет: {full_name}\n"
-                                   f"👨‍🏫 Преподаватель: {teacher_name}\n"
-                                   f"🚪 Кабинет: {room_number}\n\n\n"
-                                   f"🏎 Кратко: {day_name}, {lesson_number} урок: {full_name} {room_number} ({teacher_name})",
-                        "class_name": class_name
-                    }
-
-                    requests.post(
-                        "http://localhost:8000/notify",
-                        json=notification_data,
-                        timeout=5
+                    message = (
+                        f"📝 Изменение в расписании вашего класса:\n"
+                        f"📅 День: {day_name}\n"
+                        f"⏰ Урок: {lesson_number}\n"
+                        f"📚 Предмет: {full_name}\n"
+                        f"👨‍🏫 Преподаватель: {teacher_name}\n"
+                        f"🚪 Кабинет: {room_number}\n\n"
+                        f"🏎 Кратко: {day_name}, {lesson_number} урок: {full_name} ({room_number})"
                     )
-                except Exception as e:
-                    print(f"Ошибка отправки уведомления: {str(e)}")
 
-                # Сохраняем все данные в UserRole
+                    # Подключаемся к базе данных Telegram бота
+                    user_db_conn = sqlite3.connect('BD_TG_BOT.db')
+                    user_cursor = user_db_conn.cursor()
+                    user_cursor.execute("SELECT user_id FROM users WHERE class = ?", (class_name,))
+                    users = user_cursor.fetchall()
+                    user_db_conn.close()
+
+                    # Отправляем сообщение каждому пользователю
+                    for user in users:
+                        user_id = user[0]
+                        try:
+                            url = f"https://api.telegram.org/bot7740433474:AAGMa_q92stKOJr5hcUFAn5E6C6Q9yR6wBw/sendMessage"
+                            params = {
+                                "chat_id": user_id,
+                                "text": message,
+                                "parse_mode": "Markdown"
+                            }
+                            requests.post(url, json=params, timeout=5)
+                        except Exception as e:
+                            print(f"Ошибка отправки уведомления пользователю {user_id}: {str(e)}")
+
+                except Exception as e:
+                    print(f"Ошибка при отправке уведомлений: {str(e)}")
+
                 full_data = {
                     'subject': full_name,
                     'subject_id': subject_id,
@@ -253,18 +253,43 @@ class ScheduleItemDelegate(QStyledItemDelegate):
                     'lesson': lesson_number,
                     'class_id': class_id
                 }
-                model.setData(index, full_data, Qt.ItemDataRole.UserRole)
 
-                # Отображаем только "Предмет (Кабинет)"
                 display_text = f"{full_name} ({room_number})" if room_number else full_name
                 model.setData(index, display_text, Qt.ItemDataRole.DisplayRole)
+                model.setData(index, full_data, Qt.ItemDataRole.UserRole)
 
-                # Устанавливаем цвета
-                model.setData(index, QColor(42, 181, 194), Qt.ItemDataRole.BackgroundRole)
+                # Устанавливаем цвет в зависимости от совпадения с базой
+                if db_record and db_record[0] == full_name and db_record[1] == teacher_name and db_record[
+                    2] == room_number:
+                    model.setData(index, QColor(171, 131, 105), Qt.ItemDataRole.BackgroundRole)  # Бежевый
+                    model.setData(index, None, Qt.ItemDataRole.UserRole + 1)  # Нет изменений
+                else:
+                    model.setData(index, QColor(42, 181, 194), Qt.ItemDataRole.BackgroundRole)  # Бирюзовый
+                    model.setData(index, "modified", Qt.ItemDataRole.UserRole + 1)  # Изменено
+
                 model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
 
-                # Проверяем конфликты
+                # Сохраняем изменения в базе данных
+                if db_record:
+                    cursor.execute("""
+                        UPDATE Расписание 
+                        SET ID_предмета = ?, ID_учителя = ?, ID_кабинета = ?
+                        WHERE День_недели = ? AND ID_временного_слота = ? AND ID_класса = ?
+                    """, (subject_id, teacher_id, room_id, day_number, time_slot_id, class_id))
+                else:
+                    cursor.execute("""
+                        INSERT INTO Расписание 
+                        (День_недели, ID_временного_слота, ID_класса, ID_предмета, ID_учителя, ID_кабинета)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (day_number, time_slot_id, class_id, subject_id, teacher_id, room_id))
+
+                self.db_conn.commit()
+
+                # Обновляем отображение и проверяем конфликты
+                self.parent().update_cell_colors(row)
                 self.parent().check_teacher_conflicts()
+                self.parent().table.viewport().update()
+
             except sqlite3.Error as e:
                 QMessageBox.critical(self.parent(), "Ошибка базы данных", f"Не удалось сохранить данные: {str(e)}")
                 self.db_conn.rollback()
@@ -274,15 +299,11 @@ class ScheduleItemDelegate(QStyledItemDelegate):
         try:
             cursor = self.db_conn.cursor()
 
-            # Получаем информацию о текущей ячейке
             row = index.row()
             col = index.column()
+            day_number = row // 9 + 1
+            lesson_number = (row % 9) + 1
 
-            # Определяем день недели и номер урока
-            day_number = row // 9 + 1  # Порядковый номер дня (1-5)
-            lesson_number = (row % 9) + 1  # Номер урока (1-9)
-
-            # Получаем ID класса из заголовка столбца
             class_name = self.parent().table.horizontalHeaderItem(col).text()
             cursor.execute("SELECT id FROM Классы WHERE Название = ?", (class_name,))
             class_id_result = cursor.fetchone()
@@ -290,7 +311,6 @@ class ScheduleItemDelegate(QStyledItemDelegate):
                 return
             class_id = class_id_result[0]
 
-            # Получаем ID временного слота
             cursor.execute("""
                 SELECT id FROM Временные_слоты 
                 WHERE Номер_слота = ? AND Тип_дня = (
@@ -302,13 +322,19 @@ class ScheduleItemDelegate(QStyledItemDelegate):
                 return
             time_slot_id = time_slot_result[0]
 
-            # Удаляем запись из базы данных
             cursor.execute("""
                 DELETE FROM Расписание 
                 WHERE День_недели = ? AND ID_временного_слота = ? AND ID_класса = ?
             """, (day_number, time_slot_id, class_id))
 
             self.db_conn.commit()
+
+            model = index.model()
+            model.setData(index, QColor(171, 131, 105), Qt.ItemDataRole.BackgroundRole)
+            model.setData(index, QColor(255, 255, 255), Qt.ItemDataRole.ForegroundRole)
+            model.setData(index, None, Qt.ItemDataRole.UserRole)
+
+            self.parent().check_teacher_conflicts()
 
         except sqlite3.Error as e:
             QMessageBox.critical(self.parent(), "Ошибка базы данных", f"Не удалось удалить данные: {str(e)}")
@@ -697,11 +723,81 @@ class ScheduleApp(QMainWindow):
         self.column_width = 120
         self.first_column_width = 50
         self.row_height = 31
-        self.setGeometry(100, 100, self.window_width, self.window_height)
+        self.setGeometry(5, 30, self.window_width, self.window_height)
         self.classes = []
 
         # Инициализация интерфейса с таблицей и кнопкой "Добавить классы"
         self.init_ui()
+
+    def update_cell_colors(self, row):
+        """Обновляет цвета ячеек в указанной строке"""
+        for col in range(1, self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item:
+                full_data = item.data(Qt.ItemDataRole.UserRole)
+                if not full_data:
+                    # Если нет данных - бежевый цвет
+                    item.setBackground(QColor(171, 131, 105))
+                    item.setData(Qt.ItemDataRole.UserRole + 1, None)
+                    continue
+
+                # Получаем данные из базы данных для этой ячейки
+                day_number = row // 9 + 1
+                lesson_number = (row % 9) + 1
+                class_name = self.table.horizontalHeaderItem(col).text()
+
+                try:
+                    cursor = self.db_conn.cursor()
+                    cursor.execute("SELECT id FROM Классы WHERE Название = ?", (class_name,))
+                    class_id_result = cursor.fetchone()
+                    if not class_id_result:
+                        continue
+                    class_id = class_id_result[0]
+
+                    cursor.execute("""
+                        SELECT id FROM Временные_слоты 
+                        WHERE Номер_слота = ? AND Тип_дня = (
+                            SELECT CASE WHEN Сокращенный_день THEN 'Сокращенный' ELSE 'Обычный' END
+                            FROM Настройки_дней WHERE Порядковый_номер = ?
+                        )""", (lesson_number, day_number))
+                    time_slot_result = cursor.fetchone()
+                    if not time_slot_result:
+                        continue
+                    time_slot_id = time_slot_result[0]
+
+                    cursor.execute("""
+                        SELECT 
+                            p.Название, u.ФИО, k.Номер 
+                        FROM Расписание r
+                        JOIN Предметы p ON r.ID_предмета = p.id
+                        JOIN Учителя u ON r.ID_учителя = u.id
+                        JOIN Кабинеты k ON r.ID_кабинета = k.id
+                        WHERE r.День_недели = ? 
+                        AND r.ID_временного_слота = ? 
+                        AND r.ID_класса = ?""",
+                                   (day_number, time_slot_id, class_id))
+                    db_record = cursor.fetchone()
+
+                    # Сравниваем с данными в ячейке
+                    if (db_record and
+                            db_record[0] == full_data['subject'] and
+                            db_record[1] == full_data['teacher'] and
+                            db_record[2] == full_data['room']):
+                        # Совпадает с базой - бежевый
+                        item.setBackground(QColor(171, 131, 105))
+                        item.setData(Qt.ItemDataRole.UserRole + 1, None)
+                    else:
+                        # Не совпадает - бирюзовый
+                        item.setBackground(QColor(42, 181, 194))
+                        item.setData(Qt.ItemDataRole.UserRole + 1, "modified")
+
+                    item.setForeground(QColor(255, 255, 255))
+
+                except sqlite3.Error as e:
+                    print(f"Ошибка при проверке цвета ячейки: {str(e)}")
+
+        # После обновления цветов проверяем конфликты
+        self.check_teacher_conflicts()
 
     def init_ui(self):
         """Инициализация интерфейса"""
@@ -730,7 +826,7 @@ class ScheduleApp(QMainWindow):
             self.table.setRowCount(1)
 
             add_button = QPushButton()
-            add_button.setIcon(QIcon("knopka.png"))
+            add_button.setIcon(QIcon("../../Downloads/knopka.png"))
             add_button.setIconSize(QSize(32, 32))
             add_button.setText("Добавить классы")
             add_button.setStyleSheet("""
@@ -778,17 +874,8 @@ class ScheduleApp(QMainWindow):
 
     def check_teacher_conflicts(self):
         """Проверка конфликтов с цветовой подсветкой"""
-        # Сбрасываем все выделения
-        for row in range(self.table.rowCount()):
-            for col in range(1, self.table.columnCount()):
-                item = self.table.item(row, col)
-                if item:
-                    #item.setBackground(QColor(251, 206, 177))  # Стандартный цвет
-                    item.setData(Qt.ItemDataRole.UserRole + 1, None)
-
-        # Словари для сбора данных
-        teacher_dict = {}  # {строка: {учитель: [ячейки]}}
-        room_dict = {}  # {строка: {кабинет: [ячейки]}}
+        teacher_dict = {}
+        room_dict = {}
 
         # Собираем данные
         for row in range(self.table.rowCount()):
@@ -796,7 +883,6 @@ class ScheduleApp(QMainWindow):
                 item = self.table.item(row, col)
                 if item and item.text():
                     full_data = item.data(Qt.ItemDataRole.UserRole)
-
                     if isinstance(full_data, dict):
                         teacher = full_data.get('teacher')
                         room = full_data.get('room')
@@ -812,7 +898,10 @@ class ScheduleApp(QMainWindow):
             for room in room_dict[row]:
                 if len(room_dict[row][room]) > 1:
                     for item in room_dict[row][room]:
-                        item.setBackground(QColor(255, 0, 0))  # Красный
+                        # Подсвечиваем конфликты, даже если ячейка изменена
+                        if item.data(Qt.ItemDataRole.UserRole + 1) != "room_conflict":
+                            item.setBackground(QColor(255, 0, 0))  # Красный
+                            item.setData(Qt.ItemDataRole.UserRole + 1, "room_conflict")
 
         # Проверяем конфликты учителей (розовый)
         for row in teacher_dict:
@@ -820,8 +909,16 @@ class ScheduleApp(QMainWindow):
                 if len(teacher_dict[row][teacher]) > 1:
                     for item in teacher_dict[row][teacher]:
                         # Подсвечиваем только если нет конфликта кабинета
-                        if item.background().color() != QColor(255, 0, 0):
+                        if item.data(Qt.ItemDataRole.UserRole + 1) != "room_conflict":
                             item.setBackground(QColor(205, 132, 157))  # Розовый
+                            item.setData(Qt.ItemDataRole.UserRole + 1, "teacher_conflict")
+
+        # Восстанавливаем бирюзовый цвет для измененных ячеек
+        for row in range(self.table.rowCount()):
+            for col in range(1, self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item and item.data(Qt.ItemDataRole.UserRole + 1) == "modified":
+                    item.setBackground(QColor(42, 181, 194))  # Бирюзовый
 
     def setup_days_panel(self):
         """Панель с днями недели"""
@@ -1008,7 +1105,7 @@ class ScheduleApp(QMainWindow):
                     # Создаем элемент таблицы
                     item = QTableWidgetItem(f"{subject} ({room})")
                     item.setData(Qt.ItemDataRole.UserRole, full_data)
-                    item.setBackground(QColor(127, 111, 102))
+                    item.setBackground(QColor(171, 131, 105))  # Средний бежевый
                     item.setForeground(QColor(255, 255, 255))
 
                     self.table.setItem(row, col, item)
